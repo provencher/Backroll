@@ -8,7 +8,7 @@
   "bugs": "https://github.com/HouraiTeahouse/Backroll/issues",
   "repository": "github:HouraiTeahouse/Backroll",
   "dependencies": {
-    "com.houraiteahosue.networking": "0.1.0"
+    "com.houraiteahouse.networking": "0.1.0"
   },
   "publishConfig": {
     "registry": "https://upm.houraiteahouse.net"
