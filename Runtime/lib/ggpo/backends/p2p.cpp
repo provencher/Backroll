@@ -1,11 +1,3 @@
-/* -----------------------------------------------------------------------
- * GGPO.net (http://ggpo.net)  -  Copyright 2009 GroundStorm Studios, LLC.
- *
- * Use of this software is governed by the MIT license that can be found
- * in the LICENSE file.
- */
-
-#include "p2p.h"
 
 static const int RECOMMENDATION_INTERVAL           = 240;
 static const int DEFAULT_DISCONNECT_TIMEOUT        = 5000;
@@ -54,7 +46,7 @@ Peer2PeerBackend::Peer2PeerBackend(GGPOSessionCallbacks *cb,
     */
    _callbacks.begin_game(gamename);
 }
-  
+
 Peer2PeerBackend::~Peer2PeerBackend()
 {
    delete [] _endpoints;
@@ -69,7 +61,7 @@ Peer2PeerBackend::AddRemotePlayer(char *ip,
     * Start the state machine (xxx: no)
     */
    _synchronizing = true;
-   
+
    _endpoints[queue].Init(&_udp, _poll, queue, ip, port, _local_connect_status);
    _endpoints[queue].SetDisconnectTimeout(_disconnect_timeout);
    _endpoints[queue].SetDisconnectNotifyStart(_disconnect_notify_start);
@@ -129,7 +121,7 @@ Peer2PeerBackend::DoPoll(int timeout)
             if (_num_spectators > 0) {
                while (_next_spectator_frame <= total_min_confirmed) {
                   Log("pushing frame %d to spectators.\n", _next_spectator_frame);
-   
+
                   GameInput input;
                   input.frame = _next_spectator_frame;
                   input.size = _input_size * _num_players;
@@ -275,7 +267,7 @@ Peer2PeerBackend::AddLocalInput(GGPOPlayerHandle player,
    if (_synchronizing) {
       return GGPO_ERRORCODE_NOT_SYNCHRONIZED;
    }
-   
+
    result = PlayerHandleToQueue(player, &queue);
    if (!GGPO_SUCCEEDED(result)) {
       return result;
@@ -328,7 +320,7 @@ Peer2PeerBackend::SyncInput(void *values,
 
 GGPOErrorCode
 Peer2PeerBackend::IncrementFrame(void)
-{  
+{
    Log("End of frame (%d)...\n", _sync.GetFrameCount());
    _sync.IncrementFrame();
    DoPoll(0);
@@ -465,7 +457,7 @@ Peer2PeerBackend::DisconnectPlayer(GGPOPlayerHandle player)
    if (!GGPO_SUCCEEDED(result)) {
       return result;
    }
-   
+
    if (_local_connect_status[queue].disconnected) {
       return GGPO_ERRORCODE_PLAYER_DISCONNECTED;
    }
@@ -533,8 +525,8 @@ Peer2PeerBackend::GetNetworkStats(GGPONetworkStats *stats, GGPOPlayerHandle play
 }
 
 GGPOErrorCode
-Peer2PeerBackend::SetFrameDelay(GGPOPlayerHandle player, int delay) 
-{ 
+Peer2PeerBackend::SetFrameDelay(GGPOPlayerHandle player, int delay)
+{
    int queue;
    GGPOErrorCode result;
 
@@ -543,7 +535,7 @@ Peer2PeerBackend::SetFrameDelay(GGPOPlayerHandle player, int delay)
       return result;
    }
    _sync.SetFrameDelay(queue, delay);
-   return GGPO_OK; 
+   return GGPO_OK;
 }
 
 GGPOErrorCode
@@ -581,7 +573,7 @@ Peer2PeerBackend::PlayerHandleToQueue(GGPOPlayerHandle player, int *queue)
    return GGPO_OK;
 }
 
- 
+
 void
 Peer2PeerBackend::OnMsg(sockaddr_in &from, UdpMsg *msg, int len)
 {

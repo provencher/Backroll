@@ -101,12 +101,12 @@ public abstract class BackrollSession<T> : FullMeshPeer, IDisposable where T : s
   //
   // Will raise a BackrollException if the state is invalid. Returns the handle
   // of the added player.
-  public BackrollPlayerHandle AddPlayer(in BackrollPlayer player);
+  public abstract BackrollPlayerHandle AddPlayer(in BackrollPlayer player);
 
   // Change the amount of frames ggpo will delay local input.  Must be called
   // before the first call to SynchronizeInput.
-  public BackrollErrorCode SetFrameDelay(BackrollPlayerHandle player,
-                                         int frame_delay);
+  public abstract void SetFrameDelay(BackrollPlayerHandle player,
+                                     int frame_delay);
 
   // Should be called periodically by your application to give Backroll
   // a chance to do some work.  Most packet transmissions and rollbacks occur
@@ -114,11 +114,19 @@ public abstract class BackrollSession<T> : FullMeshPeer, IDisposable where T : s
   //
   // timeout - The amount of time Backroll.net is allowed to spend in this function,
   // in milliseconds.
-  public BackrollErrorCode Idle(int timeout);
+  public abstract void Idle(int timeout);
 
   // Used to close a session.  You must call this to free the resources allocated
   // in StartSession.
-  public void Dispose();
+  public virtual void Dispose() {
+    OnSaveGameState = null;
+    OnLoadGameState = null;
+    OnFreeBuffer = null;
+    OnAdvanceFrame = null;
+    OnLoadGameState = null;
+    OnBackrollEvent = null;
+    Lobby.Leave();
+  }
 
   // You should call ggpo_synchronize_input before every frame of execution,
   // including those frames which happen during rollback.
@@ -133,25 +141,25 @@ public abstract class BackrollSession<T> : FullMeshPeer, IDisposable where T : s
   // valid.  If a player has disconnected, the input in the values array for
   // that player will be zeroed and the i-th flag will be set.  For example,
   // if only player 3 has disconnected, disconnect flags will be 8 (i.e. 1 << 3).
-  void SynchronizeInput(void* values, int size, int *disconnect_flags);
+  public abstract void SyncInput(void* values, int size, int *disconnect_flags);
 
   // Disconnects a remote player from a game.  Will return Backroll_ERRORCODE_PLAYER_DISCONNECTED
   // if you try to disconnect a player who has already been disconnected.
-  void DisconnectPlayer(BackrollPlayerHandle player);
+  public abstract void DisconnectPlayer(BackrollPlayerHandle player);
 
   // You should call this to notify Backroll that you have advancedt the
   // gamestate by a single frame.  You should call this everytime you advance the
   // gamestate by a frame, even during rollbacks.  Backroll may call your
   // save_state callback before this function returns.
-  void AdvanceFrame();
+  public abstract void AdvanceFrame();
 
   // Used to fetch some statistics about the quality of the network connection.
   //
-  // player - The player handle returned from the ggpo_add_player function you used
-  // to add the remote player.
+  // player - The player handle returned from the ggpo_add_player function you
+  // used to add the remote player.
   //
-  // stats - Out parameter to the network statistics.
-  BackrollNetworkStats GetNetworkStats(BackrollPlayerHandle player);
+  // Returns the network statistics.
+  public abstract BackrollNetworkStats GetNetworkStats(BackrollPlayerHandle player);
 
   // Sets the disconnect timeout.  The session will automatically disconnect
   // from a remote peer if it has not received a packet in the timeout window.
@@ -161,14 +169,14 @@ public abstract class BackrollSession<T> : FullMeshPeer, IDisposable where T : s
   // Setting a timeout value of 0 will disable automatic disconnects.
   //
   // timeout - The time in milliseconds to wait before disconnecting a peer.
-  void SetDisconnectTimeout(int timeout);
+  public abstract void SetDisconnectTimeout(int timeout);
 
   // The time to wait before the first Backroll_EVENTCODE_NETWORK_INTERRUPTED timeout
   // will be sent.
   //
   // timeout - The amount of time which needs to elapse without receiving a packet
   //           before the Backroll_EVENTCODE_NETWORK_INTERRUPTED event is sent.
-  void SetDisconnectNotifyStart(int timeout);
+  public abstract void SetDisconnectNotifyStart(int timeout);
 }
 
 }

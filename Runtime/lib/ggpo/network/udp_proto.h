@@ -75,7 +75,7 @@ public:
    bool HandlesMsg(sockaddr_in &from, UdpMsg *msg);
    void OnMsg(UdpMsg *msg, int len);
    void Disconnect();
-  
+
    void GetNetworkStats(struct GGPONetworkStats *stats);
    bool GetEvent(UdpProtocol::Event &e);
    void GGPONetworkStats(Stats *stats);
@@ -127,7 +127,7 @@ protected:
     * Network transmission information
     */
    Udp            *_udp;
-   sockaddr_in    _peer_addr; 
+   sockaddr_in    _peer_addr;
    uint16         _magic_number;
    int            _queue;
    uint16         _remote_magic_number;
@@ -140,15 +140,6 @@ protected:
       UdpMsg*     msg;
    }              _oo_packet;
    RingBuffer<QueueEntry, 64> _send_queue;
-
-   /*
-    * Stats
-    */
-   int            _round_trip_time;
-   int            _packets_sent;
-   int            _bytes_sent;
-   int            _kbps_sent;
-   int            _stats_start_time;
 
    /*
     * The state machine
@@ -169,34 +160,6 @@ protected:
       } running;
    } _state;
 
-   /*
-    * Fairness.
-    */
-   int               _local_frame_advantage;
-   int               _remote_frame_advantage;
-
-   /*
-    * Packet loss...
-    */
-   RingBuffer<GameInput, 64>  _pending_output;
-   GameInput                  _last_received_input;
-   GameInput                  _last_sent_input;
-   GameInput                  _last_acked_input;
-   unsigned int               _last_send_time;
-   unsigned int               _last_recv_time;
-   unsigned int               _shutdown_timeout;
-   unsigned int               _disconnect_event_sent;
-   unsigned int               _disconnect_timeout;
-   unsigned int               _disconnect_notify_start;
-   bool                       _disconnect_notify_sent;
-
-   uint16                     _next_send_seq;
-   uint16                     _next_recv_seq;
-
-   /*
-    * Rift synchronization.
-    */
-   TimeSync                   _timesync;
 
    /*
     * Event queue
