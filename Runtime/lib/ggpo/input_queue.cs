@@ -1,8 +1,9 @@
+using UnityEngine;
 using UnityEngine.Assertions;
 
 namespace HouraiTeahouse.Backroll {
 
-public class InputQueue {
+public unsafe class InputQueue {
 
    int _id, _head, _tail, _length;
    bool _firstFrame;
@@ -10,7 +11,7 @@ public class InputQueue {
    int _lastUserAddedFrame, _lastAddedFrame, _firstIncorrectFrame;
    int _lastFrameRequested;
 
-   int _frame_delay;
+   public int FrameDelay { get; set; }
 
    readonly GameInput[] _inputs;
    GameInput _prediction;
@@ -19,16 +20,16 @@ public class InputQueue {
     return (offset == 0) ? (_inputs.Length - 1) : (offset - 1);
   }
 
-  public InputQueue(int queue_size, int input_size, int id = -1) {
+  public InputQueue(int queue_size, uint input_size, int id = -1) {
      _id = id;
-     _head = _tail = _length = _frame_delay = 0;
+     _head = _tail = _length = FrameDelay = 0;
      _firstFrame = true;
      _lastUserAddedFrame = GameInput.kNullFrame;
      _firstIncorrectFrame = GameInput.kNullFrame;
      _lastFrameRequested = GameInput.kNullFrame;
      _lastAddedFrame = GameInput.kNullFrame;
 
-     _prediction.init(GameInput.kNullFrame, NULL, input_size);
+     _prediction = new GameInput(GameInput.kNullFrame, null, input_size);
 
      // This is safe because we know the GameInput is a proper structure (as in,
      // no virtual methods, no contained classes, etc.).
@@ -39,7 +40,7 @@ public class InputQueue {
   }
 
   public int GetLastConfirmedFrame() {
-     Log("returning last confirmed frame %d.\n", _lastAddedFrame);
+     Debug.LogFormat("returning last confirmed frame {}.", _lastAddedFrame);
      return _lastAddedFrame;
   }
 
@@ -51,31 +52,31 @@ public class InputQueue {
      Assert.IsTrue(frame >= 0);
 
      if (_lastFrameRequested != GameInput.kNullFrame) {
-        frame = MIN(frame, _lastFrameRequested);
+        frame = Mathf.Min(frame, _lastFrameRequested);
      }
 
-     Log("discarding confirmed frames up to %d (last_added:%d length:%d [head:%d tail:%d]).\n",
+     Debug.LogFormat("discarding confirmed frames up to {} (last_added:{} length:{} [head:{} tail:{}]).",
          frame, _lastAddedFrame, _length, _head, _tail);
      if (frame >= _lastAddedFrame) {
         _tail = _head;
      } else {
         int offset = frame - _inputs[_tail].Frame + 1;
 
-        Log("difference of %d frames.\n", offset);
+        Debug.LogFormat("difference of {} frames.", offset);
         Assert.IsTrue(offset >= 0);
 
         _tail = (_tail + offset) % _inputs.Length;
         _length -= offset;
      }
 
-     Log("after discarding, new tail is %d (frame:%d).\n", _tail, _inputs[_tail].Frame);
+     Debug.LogFormat("after discarding, new tail is {} (frame:{}).", _tail, _inputs[_tail].Frame);
      Assert.IsTrue(_length >= 0);
   }
 
   public void ResetPrediction(int frame) {
      Assert.IsTrue(_firstIncorrectFrame == GameInput.kNullFrame || frame <= _firstIncorrectFrame);
 
-     Log("resetting all prediction errors back to frame %d.\n", frame);
+     Debug.LogFormat("resetting all prediction errors back to frame {}.", frame);
 
      // There's nothing really to do other than reset our prediction
      // state and the incorrect frame counter...
@@ -84,18 +85,16 @@ public class InputQueue {
      _lastFrameRequested = GameInput.kNullFrame;
   }
 
-  public bool GetConfirmedInput(int requested_frame, GameInput *input) {
+  public bool GetConfirmedInput(int requested_frame, ref GameInput input) {
      Assert.IsTrue(_firstIncorrectFrame == GameInput.kNullFrame || requested_frame < _firstIncorrectFrame);
      int offset = requested_frame % _inputs.Length;
-     if (_inputs[offset].Frame != requested_frame) {
-        return false;
-     }
-     *input = _inputs[offset];
+     if (_inputs[offset].Frame != requested_frame) return false;
+     input = _inputs[offset];
      return true;
   }
 
-  public bool GetInput(int requested_frame, GameInput *input) {
-     Log("requesting input frame %d.\n", requested_frame);
+  public bool GetInput(int requested_frame, out GameInput input) {
+     Debug.LogFormat("requesting input frame {}.", requested_frame);
 
      // No one should ever try to grab any input when we have a prediction
      // error.  Doing so means that we're just going further down the wrong
@@ -116,8 +115,8 @@ public class InputQueue {
         if (offset < _length) {
            offset = (offset + _tail) % _inputs.Length;
            Assert.IsTrue(_inputs[offset].Frame == requested_frame);
-           *input = _inputs[offset];
-           Log("returning confirmed frame number %d.\n", input->frame);
+           input = _inputs[offset];
+           Debug.LogFormat("returning confirmed frame number {}.", input.Frame);
            return true;
         }
 
@@ -125,13 +124,13 @@ public class InputQueue {
         // to return a prediction frame.  Predict that the user will do the
         // same thing they did last time.
         if (requested_frame == 0) {
-           Log("basing new prediction frame from nothing, you're client wants frame 0.\n");
-           _prediction.erase();
+           Debug.Log("basing new prediction frame from nothing, you're client wants frame 0.");
+           _prediction.Clear();
         } else if (_lastAddedFrame == GameInput.kNullFrame) {
-           Log("basing new prediction frame from nothing, since we have no frames yet.\n");
-           _prediction.erase();
+           Debug.Log("basing new prediction frame from nothing, since we have no frames yet.");
+           _prediction.Clear();
         } else {
-           Log("basing new prediction frame from previously added frame (queue entry:%d, frame:%d).\n",
+           Debug.LogFormat("basing new prediction frame from previously added frame (queue entry:{}, frame:{}).",
                 PreviousFrame(_head), _inputs[PreviousFrame(_head)].Frame);
            _prediction = _inputs[PreviousFrame(_head)];
         }
@@ -143,17 +142,17 @@ public class InputQueue {
      // If we've made it this far, we must be predicting.  Go ahead and
      // forward the prediction frame contents.  Be sure to return the
      // frame number requested by the client, though.
-     *input = _prediction;
-     input->frame = requested_frame;
-     Log("returning prediction frame number %d (%d).\n", input->frame, _prediction.Frame);
+     input = _prediction;
+     input.Frame = requested_frame;
+     Debug.LogFormat("returning prediction frame number {} ({}).", input.Frame, _prediction.Frame);
 
      return false;
   }
 
-  public void AddInput(GameInput &input) {
+  public void AddInput(ref GameInput input) {
      int new_frame;
 
-     Log("adding input frame number %d to queue.\n", input.Frame);
+     Debug.LogFormat("adding input frame number {} to queue.", input.Frame);
 
      // These next two lines simply verify that inputs are passed in
      // sequentially by the user, regardless of frame delay.
@@ -174,10 +173,10 @@ public class InputQueue {
      input.Frame = new_frame;
   }
 
-  protected void AddDelayedInputToQueue(GameInput &input, int frame_number) {
-     Log("adding delayed input frame number %d to queue.\n", frame_number);
+  protected void AddDelayedInputToQueue(in GameInput input, int frame_number) {
+     Debug.LogFormat("adding delayed input frame number {} to queue.", frame_number);
 
-     Assert.IsTrue(input.size == _prediction.size);
+     Assert.IsTrue(input.Size == _prediction.Size);
      Assert.IsTrue(_lastAddedFrame == GameInput.kNullFrame || frame_number == _lastAddedFrame + 1);
      Assert.IsTrue(frame_number == 0 || _inputs[PreviousFrame(_head)].Frame == frame_number - 1);
 
@@ -197,8 +196,8 @@ public class InputQueue {
         // what we've been predicting.  If so, don't worry about it.  If not,
         // remember the first input which was incorrect so we can report it
         // in GetFirstIncorrectFrame()
-        if (_firstIncorrectFrame == GameInput.kNullFrame && !_prediction.equal(input, true)) {
-           Log("frame %d does not match prediction.  marking error.\n", frame_number);
+        if (_firstIncorrectFrame == GameInput.kNullFrame && !_prediction.Equals(input, true)) {
+           Debug.LogFormat("frame {} does not match prediction.  marking error.", frame_number);
            _firstIncorrectFrame = frame_number;
         }
 
@@ -207,7 +206,7 @@ public class InputQueue {
         // of predition mode entirely!  Otherwise, advance the prediction frame
         // count up.
         if (_prediction.Frame == _lastFrameRequested && _firstIncorrectFrame == GameInput.kNullFrame) {
-           Log("prediction is correct!  dumping out of prediction mode.\n");
+           Debug.Log("prediction is correct!  dumping out of prediction mode.");
            _prediction.Frame = GameInput.kNullFrame;
         } else {
            _prediction.Frame++;
@@ -217,17 +216,17 @@ public class InputQueue {
   }
 
   protected int AdvanceQueueHead(int frame) {
-     Log("advancing queue head to frame %d.\n", frame);
+     Debug.LogFormat("advancing queue head to frame {}.", frame);
 
      int expected_frame = _firstFrame ? 0 : _inputs[PreviousFrame(_head)].Frame + 1;
 
-     frame += _frame_delay;
+     frame += FrameDelay;
 
      if (expected_frame > frame) {
         // This can occur when the frame delay has dropped since the last
         // time we shoved a frame into the system.  In this case, there's
         // no room on the queue.  Toss it.
-        Log("Dropping input frame %d (expected next frame to be %d).\n",
+        Debug.LogFormat("Dropping input frame {} (expected next frame to be {}).",
             frame, expected_frame);
         return GameInput.kNullFrame;
      }
@@ -237,9 +236,9 @@ public class InputQueue {
         // time we shoved a frame into the system.  We need to replicate the
         // last frame in the queue several times in order to fill the space
         // left.
-        Log("Adding padding frame %d to account for change in frame delay.\n",
+        Debug.LogFormat("Adding padding frame {} to account for change in frame delay.",
             expected_frame);
-        GameInput &last_frame = _inputs[PreviousFrame(_head)];
+        ref GameInput last_frame = ref _inputs[PreviousFrame(_head)];
         AddDelayedInputToQueue(last_frame, expected_frame);
         expected_frame++;
      }

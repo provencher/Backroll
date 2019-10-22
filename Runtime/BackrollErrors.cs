@@ -1,3 +1,4 @@
+using System;
 
 namespace HouraiTeahouse.Backroll {
 
@@ -5,9 +6,8 @@ public class BackrollException : Exception {
 
   readonly BackrollErrorCode ErrorCode;
 
-  public BackrollException(BackrollErrorCode errorCode) {
+  public BackrollException(BackrollErrorCode errorCode) : base($"Backroll Error: {errorCode}") {
     ErrorCode = errorCode;
-    Message = $"Backroll Error: {errorCode}";
   }
 
 }
@@ -21,7 +21,7 @@ public enum BackrollErrorCode : sbyte {
   PlayerOutOfRange    = 3,
   PredictionThreshold = 4,
   Unsupported         = 5,
-  NotSynchronize      = 6,
+  NotSynchronized     = 6,
   InRollback          = 7,
   InputDropped        = 8,
   PlayerDisconnected  = 9,

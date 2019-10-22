@@ -1,8 +1,11 @@
 using System;
+using UnityEngine;
 
 namespace HouraiTeahouse.Backroll {
 
 public class TimeSync {
+
+  static int count = 0;
 
   public const int kDefaultFrameWindowSize = 40;
   public const int kDefaultMinUniqueFrames = 10;
@@ -17,21 +20,19 @@ public class TimeSync {
   protected readonly GameInput[] _last_inputs;
   protected int _next_prediction;
 
-  pubilc TimeSync(int frameWindowSize = kDefaultFrameWindowSize,
+  public TimeSync(int frameWindowSize = kDefaultFrameWindowSize,
                   int minUniqueFrames = kDefaultMinUniqueFrames,
                   int minFrameAdvantage = kDefaultMinFrameAdvantage,
-                  int kDefaultMaxFrameAdvantage = kDefaultFrameAdvantage) {
+                  int maxFrameAdvantage = kDefaultMaxFrameAdvantage) {
     _local = new int[frameWindowSize];
     _remote = new int[frameWindowSize];
     _next_prediction = frameWindowSize * 3;
 
-    _minFrameAdvantage = minFrameAdvantage
-    _maxFrameAdvantage = maxFrameAdvantage
+    _minFrameAdvantage = minFrameAdvantage;
+    _maxFrameAdvantage = maxFrameAdvantage;
   }
 
   public void AdvanceFrame(in GameInput input, int advantage, int radvantage) {
-    int sleep_time = 0;
-
     // Remember the last frame and frame advantage
     _last_inputs[input.Frame % _last_inputs.Length] = input;
     _local[input.Frame % _local.Length] = advantage;
@@ -53,7 +54,6 @@ public class TimeSync {
     }
     radvantage = sum / (float)_remote.Length;
 
-    static int count = 0;
     count++;
 
     // See if someone should take action.  The person furthest ahead
@@ -68,7 +68,7 @@ public class TimeSync {
     // sleep for.
     int sleep_frames = (int)(((radvantage - advantage) / 2) + 0.5);
 
-    Log("iteration %d:  sleep frames is %d\n", count, sleep_frames);
+    Debug.LogFormat("iteration {}:  sleep frames is {}", count, sleep_frames);
 
     // Some things just aren't worth correcting for.  Make sure
     // the difference is relevant before proceeding.
@@ -82,8 +82,9 @@ public class TimeSync {
     // Street Fighter), which could cause the player to miss moves.
     if (require_idle_input) {
       for (i = 1; i < _last_inputs.Length; i++) {
-         if (!_last_inputs[i].equal(_last_inputs[0], true)) {
-            Log("iteration %d:  rejecting due to input stuff at position %d...!!!\n", count, i);
+         if (!_last_inputs[i].Equals(_last_inputs[0], true)) {
+            Debug.LogFormat("iteration {}:  rejecting due to input stuff at position {}...!!!", 
+              count, i);
             return 0;
          }
       }

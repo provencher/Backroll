@@ -30,7 +30,7 @@ public class RingBuffer<T> {
 
   public void Push(in T val) {
     Assert.IsTrue(Size != (_data.Length - 1));
-    _data[_head] = t;
+    _data[_head] = val;
     _head = (_head + 1) % _data.Length;
     Size++;
   }
@@ -40,5 +40,3 @@ public class RingBuffer<T> {
 }
 
 }
-
-#endif

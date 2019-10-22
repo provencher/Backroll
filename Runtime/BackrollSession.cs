@@ -1,13 +1,48 @@
 using System;
 using HouraiTeahouse.Networking;
 using HouraiTeahouse.Networking.Topologies;
-using Unity.Collections.Lowlevel.Unsafe;
+using Unity.Collections.LowLevel.Unsafe;
+using UnityEngine.Assertions;
 
 namespace HouraiTeahouse.Backroll {
 
-public delegate void SaveGameStateCallback(void** buffer, int* len, int* checksum, int frame);
-public delegate void LoadGameStateCallback(void* buffer, int len);
-public delegate void LogGameStateCallback(string filename, void* buffer, int len);
+public unsafe delegate void SaveGameStateCallback(void** buffer, int* len, int* checksum, int frame);
+public unsafe delegate void LoadGameStateCallback(void* buffer, int len);
+public unsafe delegate void LogGameStateCallback(string filename, void* buffer, int len);
+
+public struct BackrollSessionCallbacks {
+  // The client should allocate a buffer, copy the entire contents of the current
+  // game state into it, and copy the length into the *len parameter.
+  // Optionally, the client can compute a checksum of the data and store it in
+  // the *checksum argument.
+  public SaveGameStateCallback SaveGameState;
+
+  // Backroll.net will call this function at the beginning of a rollback.
+  // The buffer and len parameters contain a previously saved state returned
+  // from the save_game_state function.  The client should make the current game
+  // state match the state contained in the buffer.
+  public LoadGameStateCallback LoadGameState;
+
+  // Frees a game state allocated in SaveGameState.  You should deallocate the
+  // memory contained in the buffer.
+  public Action<IntPtr> FreeBuffer;
+
+  // Called during a rollback.  You should advance your game
+  // state by exactly one frame.  Before each frame, call ggpo_synchronize_input
+  // to retrieve the inputs you should use for that frame.  After each frame,
+  // you should call ggpo_advance_frame to notify Backroll.net that you're
+  // finished.
+  public Action AdvanceFrame;
+
+  // log_game_state - Used in diagnostic testing.  The client should use
+  // the ggpo_log function to write the contents of the specified save
+  // state in a human readible form.
+  public LogGameStateCallback LogGameState;
+
+  // on_event - Notification that something has happened.  See the
+  // BackrollEventCode structure above for more information.
+  public Action<BackrollEvent> BackrollEvent;
+}
 
 public static class Backroll {
 
@@ -18,7 +53,9 @@ public static class Backroll {
   // players or any player disconnects, you must start a new session.
   //
   // local_port - The port Backroll should bind to for UDP traffic.
-  public static BackrollSession<T> StartSession<T>(LobbyBase lobby);
+  public static BackrollSession<T> StartSession<T>(BackrollSessionConfig config) where T : struct {
+    return new P2PBackrollSession<T>(config);
+  }
 
   // Start a spectator session.
   //
@@ -31,7 +68,9 @@ public static class Backroll {
   // num_players - The number of players which will be in this game.  The number of players
   // per session is fixed.  If you need to change the number of players or any player
   // disconnects, you must start a new session.
-  public static BackrollSession<T> StartSpectating<T>(LobbyBase lobby);
+  public static BackrollSession<T> StartSpectating<T>(LobbyBase lobby) where T : struct {
+    throw new NotImplementedException();
+  }
 
  // Used to being a new Backroll.net sync test session.  During a sync test, every
  // frame of execution is run twice: once in prediction mode and once again to
@@ -50,58 +89,19 @@ public static class Backroll {
  //
  // frames - The number of frames to run before verifying the prediction.  The
  // recommended value is 1.
- public static BackrollSession<T> StartSyncTest<T>(int frames);
+ public static BackrollSession<T> StartSyncTest<T>(int frames) where T : struct {
+    throw new NotImplementedException();
+ }
 
 }
 
-public abstract class BackrollSession<T> : FullMeshPeer, IDisposable where T : struct {
+public abstract class BackrollSession<T> : FullMeshPeer where T : struct {
 
-  public int InpuSize => UnsafeUtility.Sizeof<T>();
+  public static int InputSize => UnsafeUtility.SizeOf<T>();
 
   protected BackrollSession(LobbyBase lobby) : base(lobby) {
     Assert.IsTrue(UnsafeUtility.IsBlittable<T>());
   }
-
-  // The client should allocate a buffer, copy the entire contents of the current
-  // game state into it, and copy the length into the *len parameter.
-  // Optionally, the client can compute a checksum of the data and store it in
-  // the *checksum argument.
-  public event SaveGameStateCallback OnSaveGameState;
-
-  // Backroll.net will call this function at the beginning of a rollback.
-  // The buffer and len parameters contain a previously saved state returned
-  // from the save_game_state function.  The client should make the current game
-  // state match the state contained in the buffer.
-  public event LoadGameStateCallback OnLoadGameState;
-
-  // Frees a game state allocated in OnSaveGameState.  You should deallocate the
-  // memory contained in the buffer.
-  public event Action<void*> OnFreeBuffer;
-
-  // Called during a rollback.  You should advance your game
-  // state by exactly one frame.  Before each frame, call ggpo_synchronize_input
-  // to retrieve the inputs you should use for that frame.  After each frame,
-  // you should call ggpo_advance_frame to notify Backroll.net that you're
-  // finished.
-  public event Action OnAdvanceFrame;
-
-  // log_game_state - Used in diagnostic testing.  The client should use
-  // the ggpo_log function to write the contents of the specified save
-  // state in a human readible form.
-  public event LogGameStateCallback OnLoadGameState;
-
-  // on_event - Notification that something has happened.  See the
-  // BackrollEventCode structure above for more information.
-  public event Action<BackrollEvent> OnBackrollEvent;
-
-  // Must be called for each player in the session (e.g. in a 3 player session, must
-  // be called 3 times).
-  //
-  // player - A BackrollPlayer struct used to describe the player.
-  //
-  // Will raise a BackrollException if the state is invalid. Returns the handle
-  // of the added player.
-  public abstract BackrollPlayerHandle AddPlayer(in BackrollPlayer player);
 
   // Change the amount of frames ggpo will delay local input.  Must be called
   // before the first call to SynchronizeInput.
@@ -116,18 +116,6 @@ public abstract class BackrollSession<T> : FullMeshPeer, IDisposable where T : s
   // in milliseconds.
   public abstract void Idle(int timeout);
 
-  // Used to close a session.  You must call this to free the resources allocated
-  // in StartSession.
-  public virtual void Dispose() {
-    OnSaveGameState = null;
-    OnLoadGameState = null;
-    OnFreeBuffer = null;
-    OnAdvanceFrame = null;
-    OnLoadGameState = null;
-    OnBackrollEvent = null;
-    Lobby.Leave();
-  }
-
   // You should call ggpo_synchronize_input before every frame of execution,
   // including those frames which happen during rollback.
   //
@@ -141,7 +129,7 @@ public abstract class BackrollSession<T> : FullMeshPeer, IDisposable where T : s
   // valid.  If a player has disconnected, the input in the values array for
   // that player will be zeroed and the i-th flag will be set.  For example,
   // if only player 3 has disconnected, disconnect flags will be 8 (i.e. 1 << 3).
-  public abstract void SyncInput(void* values, int size, int *disconnect_flags);
+  public unsafe abstract int SyncInput(void* values, int size);
 
   // Disconnects a remote player from a game.  Will return Backroll_ERRORCODE_PLAYER_DISCONNECTED
   // if you try to disconnect a player who has already been disconnected.
