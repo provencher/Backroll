@@ -189,7 +189,7 @@ public unsafe class BackrollConnection : IDisposable {
      Send(new InputAckMessage { AckFrame = _lastRecievedInput.Frame });
    }
 
-   unsafe void Send<T>(in T msg, Reliabilty reliabilty = Reliabilty.Reliable) where T : struct, INetworkSerializable {
+   unsafe void Send<T>(in T msg, Reliability reliability = Reliability.Reliable) where T : struct, INetworkSerializable {
      var buffer = stackalloc byte[2048];
      var serializer = Serializer.Create(buffer, (uint)SerializationConstants.kMaxMessageSize);
      _messageHandlers.Serialize<T>(msg, ref serializer);
@@ -199,7 +199,7 @@ public unsafe class BackrollConnection : IDisposable {
      _bytes_sent += serializer.Position;
 
      LobbyMember.SendMessage(serializer.ToArray(), serializer.Position,
-                              reliabilty);
+                              reliability);
    }
 
    public void Disconnect() {
@@ -506,7 +506,7 @@ public unsafe class BackrollConnection : IDisposable {
 
    void OnQualityReport(ref QualityReportMessage msg) {
      // send a reply so the other side can compute the round trip transmit time.
-     Send<QualityReplyMessage>(new QualityReplyMessage { Pong = msg.Ping }, Reliabilty.Unreliable);
+     Send<QualityReplyMessage>(new QualityReplyMessage { Pong = msg.Ping }, Reliability.Unreliable);
      _remoteFrameAdvantage = msg.FrameAdvantage;
    }
 
