@@ -52,6 +52,27 @@ public unsafe struct GameInput {
 
   public bool IsNull => Frame == kNullFrame;
 
+  public bool this[int bit] {
+    get {
+      fixed (byte* ptr = bits) {
+        return (bits[i/8] & (1 << (i%8))) != 0;
+      }
+    }
+  }
+
+  public void Set(int i) {
+    fixed (byte* ptr = bits) {
+      ptr[i / 8] |= (1 << (i%8));
+    }
+  }
+
+  public void Clear(int i) {
+    fixed (byte* ptr = bits) {
+      ptr[i / 8] &= ~(1 << (i%8));
+    }
+  }
+
+
   public void Clear() {
     fixed (byte* ptr = bits) {
       UnsafeUtility.MemClear(ptr, Size);

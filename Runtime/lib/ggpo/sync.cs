@@ -283,15 +283,6 @@ public unsafe class Sync : IDisposable {
      }
   }
 
-//   bool GetEvent(ref Event e) {
-//      if (_event_queue.size()) {
-//         e = _event_queue.front();
-//         _event_queue.pop();
-//         return true;
-//      }
-//      return false;
-//   }
-
 }
 
 

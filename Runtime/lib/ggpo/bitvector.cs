@@ -27,8 +27,8 @@ public static unsafe class BitVector {
      }
   }
 
-  public static int ReadBit(byte* vector, ref int offset) {
-     int retval = !!(vector[offset / 8] & (1 << (offset % 8)));
+  public static bool ReadBit(byte* vector, ref int offset) {
+     bool retval = (vector[offset / 8] & (1 << (offset % 8))) != 0;
      offset += 1;
      return retval;
   }
@@ -36,7 +36,7 @@ public static unsafe class BitVector {
   public static int ReadNibblet(byte* vector, ref int offset) {
      int nibblet = 0;
      for (int i = 0; i < kNibbleSize; i++) {
-        nibblet |= (ReadBit(vector, ref offset) << i);
+        nibblet |= ((ReadBit(vector, ref offset)) ? 1 : 0) << i);
      }
      return nibblet;
   }
