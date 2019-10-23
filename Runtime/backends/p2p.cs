@@ -63,13 +63,6 @@ public unsafe class P2PBackrollSession<T> : BackrollSession<T> where T : struct 
     }
   }
 
-  public event Action<int> OnTimeSync;
-  public event Action<BackrollPlayerHandle> OnPlayerDisconnect;
-  public event Action<BackrollPlayerHandle, int, int> OnPlayerSynchronizing;
-  public event Action<BackrollPlayerHandle> OnPlayerSynchronized;
-  public event Action<BackrollPlayerHandle, uint> OnNetworkInterrupted;
-  public event Action<BackrollPlayerHandle> OnNetworkResumed;
-
   int                   _next_recommended_sleep;
   int                   _next_spectator_frame;
 
@@ -173,7 +166,7 @@ public unsafe class P2PBackrollSession<T> : BackrollSession<T> where T : struct 
         }
 
         if (interval > 0) {
-           OnTimeSync?.Invoke(interval);
+           _callbacks.OnTimeSync?.Invoke(new TimeSyncEvent { FramesAhead = interval });
            _next_recommended_sleep = current_frame + RECOMMENDATION_INTERVAL;
         }
      }
@@ -332,19 +325,30 @@ public unsafe class P2PBackrollSession<T> : BackrollSession<T> where T : struct 
      };
 
      connection.OnSynchronizing += (total, count) => {
-        OnPlayerSynchronizing?.Invoke(handle, total, count);
+        _callbacks.OnPlayerSynchronizing?.Invoke(new PlayerSynchronizingEvent {
+           Player = handle,
+           Total = total,
+           Count = count
+        });
      };
 
      connection.OnSynchronized += () => {
-        OnPlayerSynchronized?.Invoke(handle);
+        _callbacks.OnPlayerSynchronized?.Invoke(new PlayerSynchronizedEvent {
+           Player = handle,
+        });
      };
 
-     connection.OnNetworkInterrupted += (disconnect_timeout) => {
-        OnNetworkInterrupted?.Invoke(handle, disconnect_timeout);
+     connection.OnNetworkInterrupted += (timeout) => {
+        _callbacks.OnConnectionInterrupted?.Invoke(new ConnectionInterruptedEvent {
+           Player = handle,
+           DisconnectTimeout = timeout,
+        });
      };
 
      connection.OnNetworkResumed += () => {
-        OnNetworkResumed?.Invoke(handle);
+        _callbacks.OnConnectionResumed?.Invoke(new ConnectionResumedEvent {
+           Player = handle
+        });
      };
   }
 
@@ -405,7 +409,9 @@ public unsafe class P2PBackrollSession<T> : BackrollSession<T> where T : struct 
         Debug.LogFormat("finished adjusting simulation.");
      }
 
-     OnPlayerDisconnect?.Invoke(QueueToPlayerHandle(queue));
+     _callbacks.OnDisconnected?.Invoke(new DisconnectedEvent {
+        Player = QueueToPlayerHandle(queue)
+     });
   }
 
   public override BackrollNetworkStats GetNetworkStats(BackrollPlayerHandle player) {

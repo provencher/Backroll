@@ -26,7 +26,6 @@ public struct BackrollConnectStatus : INetworkSerializable {
      data = deserializer.ReadUInt32();
 }
 
-
 public unsafe class BackrollConnection : IDisposable {
 
   const int UDP_HEADER_SIZE = 28;     /* Size of IP + UDP headers */
@@ -141,6 +140,8 @@ public unsafe class BackrollConnection : IDisposable {
     _messageHandlers.RegisterHandler<QualityReplyMessage>((byte)MessageCodes.QualityReply, OnQualityReply);
     _messageHandlers.RegisterHandler<KeepAliveMessage>((byte)MessageCodes.KeepAlive, OnKeepAlive);
     _messageHandlers.Listen(LobbyMember);
+
+    LobbyMember.OnNetworkMessage += OnNetworkMessage;
   }
 
   public void Dispose() => _messageHandlers.Dispose();
@@ -507,6 +508,15 @@ public unsafe class BackrollConnection : IDisposable {
      // send a reply so the other side can compute the round trip transmit time.
      Send<QualityReplyMessage>(new QualityReplyMessage { Pong = msg.Ping }, Reliabilty.Unreliable);
      _remoteFrameAdvantage = msg.FrameAdvantage;
+   }
+
+   void OnNetworkMessage(byte[] data, uint size) {
+      if (data == null || data.Length <= 0) return;
+      var handled = _messageHandlers.CanHandle(data[0]);
+      if (_disconnect_notify_sent && _current_state == State.Running) {
+         OnNetworkResumed?.Invoke();
+         _disconnect_notify_sent = false;
+      }
    }
 
   void UpdateNetworkStats() {

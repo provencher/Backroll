@@ -6,42 +6,6 @@ using UnityEngine.Assertions;
 
 namespace HouraiTeahouse.Backroll {
 
-public unsafe delegate void SaveGameStateCallback(ref Sync.SavedFrame frame);
-public unsafe delegate void LoadGameStateCallback(void* buffer, int len);
-public unsafe delegate void LogGameStateCallback(string filename, void* buffer, int len);
-
-public class BackrollSessionCallbacks {
-
-  public bool IsValid =>
-    SaveGameState != null &&
-    LoadGameState != null &&
-    FreeBuffer != null &&
-    AdvanceFrame != null;
-
-  // The client should allocate a buffer, copy the entire contents of the current
-  // game state into it, and copy the length into the *len parameter.
-  // Optionally, the client can compute a checksum of the data and store it in
-  // the *checksum argument.
-  public SaveGameStateCallback SaveGameState;
-
-  // Backroll.net will call this function at the beginning of a rollback.
-  // The buffer and len parameters contain a previously saved state returned
-  // from the save_game_state function.  The client should make the current game
-  // state match the state contained in the buffer.
-  public LoadGameStateCallback LoadGameState;
-
-  // Frees a game state allocated in SaveGameState.  You should deallocate the
-  // memory contained in the buffer.
-  public Action<IntPtr> FreeBuffer;
-
-  // Called during a rollback.  You should advance your game
-  // state by exactly one frame.  Before each frame, call ggpo_synchronize_input
-  // to retrieve the inputs you should use for that frame.  After each frame,
-  // you should call ggpo_advance_frame to notify Backroll.net that you're
-  // finished.
-  public Action AdvanceFrame;
-}
-
 public static class Backroll {
 
   // Starts a new Backroll session.
