@@ -1,5 +1,6 @@
 using HouraiTeahouse.Networking;
 using System;
+using System.Threading;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Assertions;
@@ -9,8 +10,9 @@ namespace HouraiTeahouse.Backroll {
 public struct BackrollSessionConfig {
    public LobbyMember[] Players;
    public LobbyMember[] Spectators;
+   public BackrollSessionCallbacks Callbacks;
 
-   public bool IsValid => GetLobby() != null;
+   public bool IsValid => GetLobby() != null && Callbacks?.IsValid == true;
 
    public LobbyBase GetLobby() {
       LobbyBase lobby = null;
@@ -63,6 +65,10 @@ public unsafe class P2PBackrollSession<T> : BackrollSession<T> where T : struct 
 
   public event Action<int> OnTimeSync;
   public event Action<BackrollPlayerHandle> OnPlayerDisconnect;
+  public event Action<BackrollPlayerHandle, int, int> OnPlayerSynchronizing;
+  public event Action<BackrollPlayerHandle> OnPlayerSynchronized;
+  public event Action<BackrollPlayerHandle, uint> OnNetworkInterrupted;
+  public event Action<BackrollPlayerHandle> OnNetworkResumed;
 
   int                   _next_recommended_sleep;
   int                   _next_spectator_frame;
@@ -75,7 +81,6 @@ public unsafe class P2PBackrollSession<T> : BackrollSession<T> where T : struct 
 
      _next_spectator_frame = 0;
 
-     _poll = new Poll();
      _callbacks = config.Callbacks;
 
      // Initialize the synchronziation layer
@@ -86,22 +91,23 @@ public unsafe class P2PBackrollSession<T> : BackrollSession<T> where T : struct 
         NumPredictionFrames = BackrollConstants.kMaxPredictionFrames,
      });
 
-     _players = InitializeConnections(config.Players);
-     _spectators = InitializeConnections(config.Spectators);
-
       _localConnectStatus = new BackrollConnectStatus[PlayerCount];
      for (int i = 0; i < _localConnectStatus.Length; i++) {
         unchecked {
-         _localConnectStatus[i].LastFrame = (uint)~0;
+         _localConnectStatus[i].LastFrame = ~0;
         }
      }
+
+     _players = InitializeConnections(config.Players);
+     _spectators = InitializeConnections(config.Spectators);
   }
 
   BackrollConnection[] InitializeConnections(LobbyMember[] members) {
      Assert.IsNotNull(members);
      var connections = new BackrollConnection[members.Length];
      for (var i = 0; i < connections.Length; i++) {
-        var connection = new BackrollConnection(members[i]);
+        var connection = new BackrollConnection(members[i], i, _localConnectStatus);
+        SetupConnection(connection);
         connection.SetDisconnectTimeout((uint)DEFAULT_DISCONNECT_TIMEOUT);
         connection.SetDisconnectNotifyStart((uint)DEFAULT_DISCONNECT_NOTIFY_START);
         connection.Synchronize();
@@ -110,13 +116,23 @@ public unsafe class P2PBackrollSession<T> : BackrollSession<T> where T : struct 
      return connections;
   }
 
+  void UpdateConnections() {
+     foreach (var connection in _players) {
+        connection.Update();
+     }
+     foreach (var connection in _spectators) {
+        connection.Update();
+     }
+  }
+
   public override void Idle(int timeout) {
      if (_sync.InRollback || IsSynchronizing) return;
+     UpdateConnections();
      _sync.CheckSimulation(timeout);
 
      // notify all of our endpoints of their local frame number for their
      // next connection quality report
-     int current_frame = _sync.GetFrameCount();
+     int current_frame = _sync.FrameCount;
      foreach (var connection in _players) {
         connection.SetLocalFrameNumber(current_frame);
      }
@@ -173,8 +189,8 @@ public unsafe class P2PBackrollSession<T> : BackrollSession<T> where T : struct 
      for (var i = 0; i < _players.Length; i++ ) {
         bool connected = true;
         if (_players[i].IsRunning) {
-           int ignore;
-           connected = _players[i].GetPeerConnectStatus(i, &ignore);
+           int ignore = 0;
+           connected = _players[i].GetPeerConnectStatus(i, ref ignore);
         }
         if (!_localConnectStatus[i].Disconnected) {
            minFrame = (int)Math.Min(_localConnectStatus[i].LastFrame, minFrame);
@@ -192,7 +208,7 @@ public unsafe class P2PBackrollSession<T> : BackrollSession<T> where T : struct 
   }
 
   protected int PollNPlayers(int current_frame) {
-     int last_received;
+     int last_received = 0;
 
      // discard confirmed frames as appropriate
      int minFrame = Int32.MaxValue;
@@ -205,19 +221,18 @@ public unsafe class P2PBackrollSession<T> : BackrollSession<T> where T : struct 
            // keep accumulating the minimum confirmed point for all n*n packets and
            // throw away the rest.
            if (_players[i].IsRunning) {
-              bool connected = _players[i].GetPeerConnectStatus(queue, &last_received);
-
-              connected = connected && connected;
+              bool peer_connected = _players[i].GetPeerConnectStatus(queue, ref last_received);
+              connected = connected && peer_connected;
               minConfirmed = Mathf.Min(last_received, minConfirmed);
               Debug.Log(
-                  $"  endpoint {i}: connected = {connected}, last_received = {last_received}, minConfirmed = {minConfirmed}.")
+                  $"  endpoint {i}: connected = {connected}, last_received = {last_received}, minConfirmed = {minConfirmed}.");
            } else {
               Debug.Log($"  endpoint {i}: ignoring... not running.");
            }
         }
         // merge in our local status only if we're still connected!
         if (!_localConnectStatus[queue].Disconnected) {
-           minConfirmed = Math.Min(_localConnectStatus[queue].LastFrame, minConfirmed);
+           minConfirmed = (int)Math.Min(_localConnectStatus[queue].LastFrame, minConfirmed);
         }
         Debug.LogFormat("  local endp: connected = {}, last_received = {}, minConfirmed = {}.",
             !_localConnectStatus[queue].Disconnected, _localConnectStatus[queue].LastFrame, minConfirmed);
@@ -265,8 +280,8 @@ public unsafe class P2PBackrollSession<T> : BackrollSession<T> where T : struct 
      // gets incorporated into the next packet we send.
 
      Debug.LogFormat("setting local connect status for local queue {} to {}",
-         queue, input.frame);
-     _localConnectStatus[queue].LastFrame = input.frame;
+         queue, input.Frame);
+     _localConnectStatus[queue].LastFrame = input.Frame;
 
      // Send the input to all the remote players.
      for (int i = 0; i < PlayerCount; i++) {
@@ -285,65 +300,63 @@ public unsafe class P2PBackrollSession<T> : BackrollSession<T> where T : struct 
   }
 
   public override void AdvanceFrame() {
-     Debug.Log("End of frame ({})...", _sync.GetFrameCount());
+     Debug.LogFormat("End of frame ({})...", _sync.FrameCount);
      _sync.IncrementFrame();
-     Idle();
+     Idle(0);
   }
 
   static int GetIndex(INetworkReciever reciever, BackrollConnection[] connections) {
     for (var i = 0; i < connections.Length; i++) {
-       if ((reciever as LobbyMember) == connection.LobbyMember) {
+       if ((reciever as LobbyMember) == connections[i].LobbyMember) {
          return i;
        }
     }
     return -1;
   }
 
-  protected override void InitConnection(LobbyMember member) {
-     base.InitConnection(member);
+  void SetupConnection(BackrollConnection connection) {
+     var queue = GetIndex(connection.LobbyMember, _players);
+     if (queue < 0) return ;
+     var handle = QueueToPlayerHandle(queue);
+     connection.OnInput += (input) => {
+       if (_localConnectStatus[queue].Disconnected) return;
+       int current_remote_frame = _localConnectStatus[queue].LastFrame;
+       int new_remote_frame = input.Frame;
+       Assert.IsTrue(current_remote_frame == -1 || new_remote_frame == (current_remote_frame + 1));
 
-     var connection = new BackrollConnection(member);
-     member.OnInput += (input) => {
-      if (GetIndex(member, _players) < 0) return;
-      if (_localConnectStatus[queue].Disconnected) return;
-      int current_remote_frame = _localConnectStatus[queue].LastFrame;
-      int new_remote_frame = msg.Input.Frame;
-      Assert.IsTrue(current_remote_frame == -1 || new_remote_frame == (current_remote_frame + 1));
-
-      _sync.AddRemoteInput(queue, evt.u.Input);
-      // Notify the other endpoints which frame we received from a peer
-      Debug.Log("setting remote connect status for queue {} to {}", queue, new_remote_frame);
-      _localConnectStatus[queue].LastFrame = new_remote_frame;
+       _sync.AddRemoteInput(queue, ref input);
+       // Notify the other endpoints which frame we received from a peer
+       Debug.LogFormat("setting remote connect status for queue {} to {}", 
+         queue, new_remote_frame); 
+       _localConnectStatus[queue].LastFrame = new_remote_frame;
      };
 
-     member.OnSynchronizing += (total, count) => {
-        OnSynchronizing?.Invoke(member, total, count);
+     connection.OnSynchronizing += (total, count) => {
+        OnPlayerSynchronizing?.Invoke(handle, total, count);
      };
 
-     member.OnSynchronized += () => {
-        OnSynchronized?.Invoke(member);
+     connection.OnSynchronized += () => {
+        OnPlayerSynchronized?.Invoke(handle);
      };
 
-     member.OnNetworkInterrupted += (disconnect_timeout) => {
-        OnNetworkInterrupted?.Invoke(member, disconnect_timeout);
+     connection.OnNetworkInterrupted += (disconnect_timeout) => {
+        OnNetworkInterrupted?.Invoke(handle, disconnect_timeout);
      };
 
-     member.OnNetworkResumed += () => {
-        OnNetworkResumed?.Invoke(member);
+     connection.OnNetworkResumed += () => {
+        OnNetworkResumed?.Invoke(handle);
      };
   }
 
   protected override void DestroyConnection(LobbyMember member) {
-    base.DestoryConnection(member);
-    var queue = GetIndex(member, _players)
+    base.DestroyConnection(member);
+    var queue = GetIndex(member, _players);
     if (queue >= 0) {
       DisconnectPlayer(QueueToPlayerHandle(queue));
-      _players.Remove(member);
     }
-    queue = GetIndex(member, _spectators)
+    queue = GetIndex(member, _spectators);
     if (queue >= 0) {
       _spectators[queue].Disconnect();
-      _spectators.Remove(member);
     }
   }
 
@@ -358,10 +371,10 @@ public unsafe class P2PBackrollSession<T> : BackrollSession<T> where T : struct 
      }
 
      if (_players[queue].IsLocal) {
-        int current_frame = _sync.GetFrameCount();
+        int current_frame = _sync.FrameCount;
         // xxx: we should be tracking who the local player is, but for now assume
         // that if the endpoint is not initalized, this must be the local player.
-        Debug.Log("Disconnecting local player {} at frame {} by user request.",
+        Debug.LogFormat("Disconnecting local player {} at frame {} by user request.",
             queue, _localConnectStatus[queue].LastFrame);
         for (int i = 0; i < PlayerCount; i++) {
            if (!_players[i].IsLocal) {
@@ -369,14 +382,14 @@ public unsafe class P2PBackrollSession<T> : BackrollSession<T> where T : struct 
            }
         }
      } else {
-        Debug.Log("Disconnecting queue {} at frame {} by user request.",
+        Debug.LogFormat("Disconnecting queue {} at frame {} by user request.",
             queue, _localConnectStatus[queue].LastFrame);
         DisconnectPlayerQueue(queue, _localConnectStatus[queue].LastFrame);
      }
   }
 
   protected void DisconnectPlayerQueue(int queue, int syncto) {
-     int framecount = _sync.GetFrameCount();
+     int framecount = _sync.FrameCount;
 
      _players[queue].Disconnect();
 
@@ -422,6 +435,9 @@ public unsafe class P2PBackrollSession<T> : BackrollSession<T> where T : struct 
      }
      return offset;
   }
+
+  protected BackrollPlayerHandle QueueToPlayerHandle(int queue) => 
+    new BackrollPlayerHandle { Id = queue + 1 };
 
 }
 

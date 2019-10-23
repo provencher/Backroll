@@ -6,11 +6,18 @@ using UnityEngine.Assertions;
 
 namespace HouraiTeahouse.Backroll {
 
-public unsafe delegate void SaveGameStateCallback(void** buffer, int* len, int* checksum, int frame);
+public unsafe delegate void SaveGameStateCallback(ref Sync.SavedFrame frame);
 public unsafe delegate void LoadGameStateCallback(void* buffer, int len);
 public unsafe delegate void LogGameStateCallback(string filename, void* buffer, int len);
 
-public struct BackrollSessionCallbacks {
+public class BackrollSessionCallbacks {
+
+  public bool IsValid =>
+    SaveGameState != null &&
+    LoadGameState != null &&
+    FreeBuffer != null &&
+    AdvanceFrame != null;
+
   // The client should allocate a buffer, copy the entire contents of the current
   // game state into it, and copy the length into the *len parameter.
   // Optionally, the client can compute a checksum of the data and store it in
@@ -33,15 +40,6 @@ public struct BackrollSessionCallbacks {
   // you should call ggpo_advance_frame to notify Backroll.net that you're
   // finished.
   public Action AdvanceFrame;
-
-  // log_game_state - Used in diagnostic testing.  The client should use
-  // the ggpo_log function to write the contents of the specified save
-  // state in a human readible form.
-  public LogGameStateCallback LogGameState;
-
-  // on_event - Notification that something has happened.  See the
-  // BackrollEventCode structure above for more information.
-  public Action<BackrollEvent> BackrollEvent;
 }
 
 public static class Backroll {
@@ -115,6 +113,8 @@ public abstract class BackrollSession<T> : FullMeshPeer where T : struct {
   // timeout - The amount of time Backroll.net is allowed to spend in this function,
   // in milliseconds.
   public abstract void Idle(int timeout);
+
+  public abstract void AddLocalInput(BackrollPlayerHandle player, ref T input);
 
   // You should call ggpo_synchronize_input before every frame of execution,
   // including those frames which happen during rollback.

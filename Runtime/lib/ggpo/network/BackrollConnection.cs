@@ -1,7 +1,10 @@
-using System;
 using HouraiTeahouse.Networking;
-using UnityEngine;
+using System.Runtime.InteropServices;
+using System;
+using Unity.Collections.LowLevel.Unsafe;
 using UnityEngine.Assertions;
+using UnityEngine;
+using Random = UnityEngine.Random;
 
 namespace HouraiTeahouse.Backroll {
 
@@ -10,11 +13,11 @@ public struct BackrollConnectStatus : INetworkSerializable {
 
    public bool Disconnected {
       get => (data & 1) != 0;
-      set => data = (data & ~1) | (uint)(value ? 1 : 0);
+      set => data = (uint)((data & ~1u) | (value ? 1u : 0u));
    }
-   public uint LastFrame {
-      get => data << 1;
-      set => data = (data & 1) | (uint)(value << 1);
+   public int LastFrame {
+      get => (int)(data << 1);
+      set => data = (uint)((data & 1) | (uint)(value << 1));
    }
 
   public void Serialize(ref Serializer serializer) =>
@@ -25,15 +28,17 @@ public struct BackrollConnectStatus : INetworkSerializable {
 
 public unsafe struct InputMessage : INetworkSerializable {
 
-   public fixed uint                  connect_status[BackrollConstants.kMaxPlayers];
-   public uint                        StartFrame;
+   public const int kMaxCompressedBits = 4096;
 
-   public int                         disconnect_requested;
-   public int                         ack_frame;
+   public fixed uint                 connect_status[BackrollConstants.kMaxPlayers];
+   public int                        StartFrame;
+
+   public bool                        DisconnectRequested;
+   public int                         AckFrame;
 
    public ushort                      NumBits;
    public uint                        InputSize; // XXX: shouldn't be in every single packet!
-   public fixed byte                  bits[4096]; /* must be last */
+   public fixed byte                  bits[kMaxCompressedBits / 8]; /* must be last */
 
   public void Serialize(ref Serializer serializer) {
      fixed (uint* status = connect_status) {
@@ -44,11 +49,12 @@ public unsafe struct InputMessage : INetworkSerializable {
       }
      }
      serializer.Write(StartFrame);
-     serializer.Write(disconnect_requested);
-     serializer.Write(ack_frame);
+     serializer.Write(DisconnectRequested);
+     serializer.Write(NumBits);
+     serializer.Write(AckFrame);
      serializer.Write(InputSize);
      fixed (byte* ptr = bits) {
-        serializer.Write(ptr, InputSize);
+        serializer.Write(ptr, (ushort)Mathf.CeilToInt(NumBits / 8f));
      }
   }
 
@@ -60,12 +66,13 @@ public unsafe struct InputMessage : INetworkSerializable {
          ((BackrollConnectStatus*)status)[i].Deserialize(ref deserializer);
       }
      }
-     StartFrame = deserializer.ReadUInt32();
-     disconnect_requested = deserializer.ReadInt32();
-     ack_frame = deserializer.ReadInt32();
+     StartFrame = deserializer.ReadInt32();
+     DisconnectRequested = deserializer.ReadBoolean();
+     NumBits = deserializer.ReadUInt16();
+     AckFrame = deserializer.ReadInt32();
      InputSize = deserializer.ReadUInt16();
      fixed (byte* ptr = bits) {
-        deserializer.ReadBytes(ptr, InputSize);
+        deserializer.ReadBytes(ptr, (ushort)Mathf.CeilToInt(NumBits / 8f));
      }
   }
 }
@@ -131,7 +138,7 @@ public struct QualityReplyMessage : INetworkSerializable {
     Pong = deserializer.ReadUInt32();
 }
 
-public class BackrollConnection : IDisposable {
+public unsafe class BackrollConnection : IDisposable {
 
   const int UDP_HEADER_SIZE = 28;     /* Size of IP + UDP headers */
   const int NUM_SYNC_PACKETS = 5;
@@ -158,14 +165,25 @@ public class BackrollConnection : IDisposable {
     KeepAlive         = 5,
   }
 
-  struct SyncState {
-    public uint RoundTripsRemaining;
-    public uint Random;
+  [StructLayout(LayoutKind.Explicit, Size=12)]
+  struct ConnectionState {
+    public struct SyncState {
+      public uint RoundTripsRemaining;
+      public uint Random;
+    }
+    public struct RunningState {
+      public uint last_quality_report_time;
+      public uint last_network_stats_interval;
+      public uint LastInputPacketRecieveTime;
+    }
+    [FieldOffset(0)] public SyncState Sync;
+    [FieldOffset(0)] public RunningState Running;
   }
 
-  public LobbyMember LobbyMember { get; }
-  State          _current_state;
-  SyncState      _sync_state;
+  public LobbyMember LobbyMember { get; private set; }
+  readonly int _queue;
+  State           _current_state;
+  ConnectionState _state;
   readonly MessageHandlers _messageHandlers;
 
    // Stats
@@ -173,23 +191,24 @@ public class BackrollConnection : IDisposable {
    int            _packets_sent;
    int            _bytes_sent;
    int            _kbps_sent;
-   uint            _stats_start_time;
+   uint           _stats_start_time;
 
    // Fairness.
-   int               _local_frame_advantage;
-   int               _remoteFrameAdvantage;
+   byte              _localFrameAdvantage;
+   byte              _remoteFrameAdvantage;
 
    // Packet loss...
    RingBuffer<GameInput>      _pending_output;
    GameInput                  _lastRecievedInput;
    GameInput                  _lastSentInput;
    GameInput                  _last_acked_input;
-   uint                       _last_send_time;
-   uint                       _last_recv_time;
+   bool                       _connected;
+   uint                       _lastSendTime;
+   uint                       _lastReceiveTime;
    uint                       _shutdown_timeout;
-   uint                       _disconnect_event_sent;
-   uint                       _disconnect_timeout;
-   uint                       _disconnect_notify_start;
+   bool                       _disconnect_event_sent;
+   uint                       _disconnectTimeout;
+   uint                       _disconnectNotifyStart;
    bool                       _disconnect_notify_sent;
 
    ushort                     _next_send_seq;
@@ -198,7 +217,8 @@ public class BackrollConnection : IDisposable {
    // Rift synchronization.
    TimeSync                   _timesync;
 
-   BackrollConnectionStatus[] _peerConnectStatus;
+   BackrollConnectStatus[] _localConnectStatus;
+   BackrollConnectStatus[] _peerConnectStatus;
 
    public bool IsLocal => LobbyMember.Id == LobbyMember.Lobby.UserId;
 
@@ -207,29 +227,30 @@ public class BackrollConnection : IDisposable {
    public event Action OnSynchronized;
    public event Action<GameInput> OnInput;
    public event Action OnDisconnected;
-   public event Action<int /*disconnect_timeout*/> OnNetworkInterrupted;
+   public event Action<uint /*disconnect_timeout*/> OnNetworkInterrupted;
    public event Action OnNetworkResumed;
 
-  public BackrollConnection(LobbyMember lobbyMember) {
+  public BackrollConnection(LobbyMember lobbyMember, int queue, BackrollConnectStatus[] localConnectStatus) {
     if (lobbyMember == null) {
-      throw new ArgumentNullException(lobbyMember);
+      throw new ArgumentNullException(nameof(lobbyMember));
     }
     LobbyMember = lobbyMember;
+    _queue = queue;
+    _localConnectStatus = localConnectStatus;
 
+    _timesync = new TimeSync();
     _pending_output = new RingBuffer<GameInput>(64);
-    _peerConnectStatus = new BackrollConnectionStatus[BackrollConstants.kMaxPlayers];
+    _peerConnectStatus = new BackrollConnectStatus[BackrollConstants.kMaxPlayers];
     for (var i = 0; i < _peerConnectStatus.Length; i++) {
-      unchecked {
-        _peerConnectStatus[i].LastFrame = (uint)-1;
-      }
+      _peerConnectStatus[i].LastFrame = -1;
     }
 
     _messageHandlers = new MessageHandlers();
-    _messageHandlers.RegisterHandler((byte)MessageCodes.Input, OnInputAck);
-    _messageHandlers.RegisterHandler((byte)MessageCodes.InputAck, OnInputAck);
-    _messageHandlers.RegisterHandler((byte)MessageCodes.QualityReport, OnQualityReport);
-    _messageHandlers.RegisterHandler((byte)MessageCodes.QualityReply, OnQualityReply);
-    _messageHandlers.RegisterHandler((byte)MessageCodes.KeepAlive, OnKeepAlive);
+    _messageHandlers.RegisterHandler<InputMessage>((byte)MessageCodes.Input, OnInputMessage);
+    _messageHandlers.RegisterHandler<InputAckMessage>((byte)MessageCodes.InputAck, OnInputAck);
+    _messageHandlers.RegisterHandler<QualityReportMessage>((byte)MessageCodes.QualityReport, OnQualityReport);
+    _messageHandlers.RegisterHandler<QualityReplyMessage>((byte)MessageCodes.QualityReply, OnQualityReply);
+    _messageHandlers.RegisterHandler<KeepAliveMessage>((byte)MessageCodes.KeepAlive, OnKeepAlive);
     _messageHandlers.Listen(LobbyMember);
   }
 
@@ -238,27 +259,30 @@ public class BackrollConnection : IDisposable {
    public void Synchronize() {
      if (LobbyMember != null) {
         _current_state = State.Syncing;
-        _sync_state.RoundTripsRemaining = NUM_SYNC_PACKETS;
+        _state.Sync.RoundTripsRemaining = NUM_SYNC_PACKETS;
         SendSyncRequest();
      }
   }
 
   public bool GetPeerConnectStatus(int id, ref int frame) {
-    frame = _peerConnectStatus[id].LastFrame;
-    return !_peerConnectStatus[id].Disconnect;
+    frame = (int)_peerConnectStatus[id].LastFrame;
+    return !_peerConnectStatus[id].Disconnected;
   }
 
    public bool IsSynchronized => _current_state == State.Running;
    public bool IsRunning => _current_state == State.Running;
 
    public void SendSyncRequest() {
-     Send(new SyncRequestMessage { AckFrame = _lastRecievedInput.Frame });
+     unchecked {
+       _state.Sync.Random = (uint)Random.Range(Int32.MinValue, Int32.MaxValue);
+       Send(new SyncRequestMessage { RandomRequest = _state.Sync.Random });
+     }
    }
 
    public void SendInput(in GameInput input) {
       if (_current_state == State.Running) {
          // Check to see if this is a good time to adjust for the rift...
-         _timesync.AdvanceFrame(input, _local_frame_advantage, _remoteFrameAdvantage);
+         _timesync.AdvanceFrame(input, _localFrameAdvantage, _remoteFrameAdvantage);
 
          // Save this input packet
          //
@@ -281,17 +305,15 @@ public class BackrollConnection : IDisposable {
      _messageHandlers.Serialize<T>(msg, ref serializer);
 
      _packets_sent++;
-     _last_send_time = GetTime();
+     _lastSendTime = BackrollTime.GetTime();
      _bytes_sent += serializer.Position;
 
      LobbyMember.SendMessage(serializer.ToArray(), serializer.Position,
                               reliabilty);
    }
 
-   uint GetTime() => (uint)Mathf.FloorToInt(Time.realtimeSinceStartup * 1000);
-
    public void Disconnect() {
-     _current_state = Disconnected;
+     _current_state = State.Disconnected;
    }
 
   public BackrollNetworkStats GetNetworkStats() {
@@ -300,20 +322,18 @@ public class BackrollConnection : IDisposable {
         SendQueueLength = _pending_output.Size,
         KbpsSent = _kbps_sent,
         RemoteFramesBehind = _remoteFrameAdvantage,
-        LocalFramesBehind = _local_frame_advantage,
+        LocalFramesBehind = _localFrameAdvantage,
      };
   }
 
-  bool OnQualityReply(INetworkReciever _, QualityReplyMessage msg) {
-     _roundTripTime = (int)GetTime() - (int)msg.Pong;
-     return true;
+  void OnQualityReply(ref QualityReplyMessage msg) {
+     _roundTripTime = (int)BackrollTime.GetTime() - (int)msg.Pong;
   }
 
-  bool OnKeepAlive(INetworkReciever _, KeepAliveMessage msg) {
-     return true;
+  void OnKeepAlive(ref KeepAliveMessage msg) {
   }
 
-  public void SetLocalFrameNumber(int num) {
+  public void SetLocalFrameNumber(int localFrame) {
      // Estimate which frame the other guy is one by looking at the
      // last frame they gave us plus some delta for the one-way packet
      // trip time.
@@ -323,272 +343,270 @@ public class BackrollConnection : IDisposable {
      // we are.  Counter-intuative, I know.  It's an advantage because
      // it means they'll have to predict more often and our moves will
      // Pop more frequenetly.
-     _local_frame_advantage = remoteFrame - localFrame;
+     _localFrameAdvantage = (byte)(remoteFrame - localFrame);
    }
 
    public int RecommendFrameDelay() =>
      _timesync.RecommendFrameWaitDuration(false);
 
-   public void SetDisconnectTimeout(uint timeout) => _disconnect_timeout = timeout;
-   public void SetDisconnectNotifyStart(uint timeout) => _disconnect_notify_start = timeout;
+   public void SetDisconnectTimeout(uint timeout) => _disconnectTimeout = timeout;
+   public void SetDisconnectNotifyStart(uint timeout) => _disconnectNotifyStart = timeout;
 
    protected void SendPendingOutput() {
-     Assert.IsTrue((GAMEINPUT_MAX_BYTES * GAMEINPUT_MAX_PLAYERS * 8) <
-                   (1 << BITVECTOR_NIBBLE_SIZE));
+     Assert.IsTrue((GameInput.kMaxBytes * BackrollConstants.kMaxPlayers * 8) <
+                   (1 << BitVector.kNibbleSize));
      int offset = 0;
-     byte* bits;
      GameInput last;
      var msg = new InputMessage();
-     fixed (byte* ptr = msg.bits,
-            lastPtr = last.bits,
-            connect_status = msg.peer_connect_status) {
-       if (_pending_output.Size <= 0) {
-          msg.StartFrame = 0;
-          msg.InputSize = 0;
-       } else {
-          last = _last_acked_input;
+     if (_pending_output.Size <= 0) {
+        msg.StartFrame = 0;
+        msg.InputSize = 0;
+     } else {
+        last = _last_acked_input;
 
-          msg.StartFrame = _pending_output.Peek().Frame;
-          msg.InputSize = _pending_output.Peek().Size;
+        msg.StartFrame = _pending_output.Peek().Frame;
+        msg.InputSize = _pending_output.Peek().Size;
 
-          Assert.IsTrue(last.Frame == -1 || last.Frame + 1 == msg.StartFrame);
-          for (var j = 0; j < _pending_output.Size; j++) {
-             ref GameInput current = ref _pending_output[j];
-             fixed (byte* currentPtr = current.bits) {
-               if (UnsafeUtility.MemCmp(currentPtr, lastPtr, current.size) != 0) {
-                  for (var i = 0; i < current.Size * 8; i++) {
-                     Assert.IsTrue(i < (1 << BitVector.kNibbleSize));
-                     if (current[i] == last[i]) continue;
-                     BitVector.SetBit(ptr, ref offset);
-                     if (current[i]) {
-                       BitVector.SetBit(ptr, ref offset);
-                     } else {
-                       BitVector.ClearBit(ptr, ref offset);
-                     }
-                     BitVector.WriteNibblet(ptr, i, ref offset);
-                  }
-               }
-             }
-             BitVector.ClearBit(ptr, ref offset);
-             last = _lastSentInput = current;
-          }
-       }
-       msg.AckFrame = _lastRecievedInput.Frame;
-       msg.NumBits = offset;
+        Assert.IsTrue(last.Frame == -1 || last.Frame + 1 == msg.StartFrame);
+        for (var j = 0; j < _pending_output.Size; j++) {
+           ref GameInput current = ref _pending_output[j];
+           fixed (byte* currentPtr = current.bits) {
+               if (UnsafeUtility.MemCmp(currentPtr, last.bits, current.Size) == 0) continue;
+           }
+           for (var i = 0; i < current.Size * 8; i++) {
+              Assert.IsTrue(i < (1 << BitVector.kNibbleSize));
+              if (current[i] == last[i]) continue;
+              BitVector.SetBit(msg.bits, ref offset);
+              if (current[i]) {
+                 BitVector.SetBit(msg.bits, ref offset);
+              } else {
+                 BitVector.ClearBit(msg.bits, ref offset);
+              }
+              BitVector.WriteNibblet(msg.bits, i, ref offset);
+           }
+           BitVector.ClearBit(msg.bits, ref offset);
+           last = _lastSentInput = current;
+         }
+      }
+      msg.AckFrame = _lastRecievedInput.Frame;
+      msg.NumBits = (ushort)offset;
 
-       msg.DisconnectRequested = _current_state == State.Disconnected;
-       if (_localConnectStatus) {
-          memcpy(msg->u.input.peer_connect_status, _localConnectStatus, sizeof(UdpMsg::connect_status) * UDP_MSG_MAX_PLAYERS);
-       } else {
-          memset(msg->u.input.peer_connect_status, 0, sizeof(UdpMsg::connect_status) * UDP_MSG_MAX_PLAYERS);
-       }
-     }
+      msg.DisconnectRequested = _current_state == State.Disconnected;
+      var size = UnsafeUtility.SizeOf<BackrollConnectStatus>() * BackrollConstants.kMaxPlayers;
+      if (_localConnectStatus != null) {
+         fixed (BackrollConnectStatus* ptr = _localConnectStatus) {
+            UnsafeUtility.MemCpy(msg.connect_status, ptr, size);
+         }
+      } else {
+         UnsafeUtility.MemClear(msg.connect_status, size);
+      }
 
-     Assert.IsTrue(offset < MAX_COMPRESSED_BITS);
-
-     SendMsg(msg);
+     Assert.IsTrue(offset < InputMessage.kMaxCompressedBits);
+     Send(msg);
    }
 
-  bool OnLoopPoll(object cookie) {
+   public void Update() {
     if (LobbyMember == null) return;
-
+    uint now = BackrollTime.GetTime();
 
    switch (_current_state) {
-   case Syncing:
-      uint now = timeGetTime();
-      uint next_interval = (_state.sync.roundtrips_remaining == NUM_SYNC_PACKETS) ? SYNC_FIRST_RETRY_INTERVAL : SYNC_RETRY_INTERVAL;
-      if (_last_send_time && _last_send_time + next_interval < now) {
-         Log("No luck syncing after %d ms... Resending sync packet.\n", next_interval);
+   case State.Syncing:
+      int next_interval = (_state.Sync.RoundTripsRemaining == NUM_SYNC_PACKETS) ? SYNC_FIRST_RETRY_INTERVAL : SYNC_RETRY_INTERVAL;
+      if (_lastSendTime != 0 && _lastSendTime + next_interval < now) {
+         Debug.LogFormat("No luck syncing after {} ms... Resending sync packet.", 
+            next_interval);
          SendSyncRequest();
       }
       break;
 
-   case Running:
+   case State.Running:
       // xxx: rig all this up with a timer wrapper
-      if (!_state.running.last_input_packet_recv_time || _state.running.last_input_packet_recv_time + RUNNING_RETRY_INTERVAL < now) {
-         Log("Haven't exchanged packets in a while (last received:%d  last sent:%d).  Resending.\n", _last_received_input.frame, _last_sent_input.frame);
+      if (_state.Running.LastInputPacketRecieveTime == 0|| 
+          _state.Running.LastInputPacketRecieveTime + RUNNING_RETRY_INTERVAL < now) {
+         Debug.LogFormat("Haven't exchanged packets in a while (last received:{}  last sent:{}).  Resending.", 
+            _lastRecievedInput.Frame, _lastSentInput.Frame);
          SendPendingOutput();
-         _state.running.last_input_packet_recv_time = now;
+         _state.Running.LastInputPacketRecieveTime = now;
       }
 
-      if (!_state.running.last_quality_report_time || _state.running.last_quality_report_time + QUALITY_REPORT_INTERVAL < now) {
-         UdpMsg *msg = new UdpMsg(UdpMsg::QualityReport);
-         OnQualityReport?.Invoke(, _local_frame_advantage);
-         msg->u.quality_report.ping = timeGetTime();
-         msg->u.quality_report.frame_advantage = _local_frame_advantage;
-         SendMsg(msg);
-         _state.running.last_quality_report_time = now;
+      if (_state.Running.last_quality_report_time == 0 || 
+          _state.Running.last_quality_report_time + QUALITY_REPORT_INTERVAL < now) {
+         Send(new QualityReportMessage {
+            Ping = BackrollTime.GetTime(),
+            FrameAdvantage = _localFrameAdvantage,
+         });
+         _state.Running.last_quality_report_time = now;
       }
 
-      if (!_state.running.last_network_stats_interval || _state.running.last_network_stats_interval + NETWORK_STATS_INTERVAL < now) {
+      if (_state.Running.last_network_stats_interval == 0 || 
+          _state.Running.last_network_stats_interval + NETWORK_STATS_INTERVAL < now) {
          UpdateNetworkStats();
-         _state.running.last_network_stats_interval =  now;
+         _state.Running.last_network_stats_interval =  now;
       }
 
-      if (_last_send_time && _last_send_time + KEEP_ALIVE_INTERVAL < now) {
-         Log("Sending keep alive packet\n");
-         SendMsg(new UdpMsg(UdpMsg::KeepAlive));
+      if (_lastSendTime == 0 && 
+          _lastSendTime + KEEP_ALIVE_INTERVAL < now) {
+         Debug.Log("Sending keep alive packet");
+         Send(new KeepAliveMessage());
       }
 
-      if (_disconnect_timeout && _disconnect_notify_start &&
-         !_disconnect_notify_sent && (_last_recv_time + _disconnect_notify_start < now)) {
-         Log("Endpoint has stopped receiving packets for %d ms.  Sending notification.\n", _disconnect_notify_start);
-         Event e(Event::NetworkInterrupted);
-         e.u.network_interrupted.disconnect_timeout = _disconnect_timeout - _disconnect_notify_start;
-         QueueEvent(e);
+      if (_disconnectTimeout != 0 && _disconnectNotifyStart != 0 &&
+         !_disconnect_notify_sent && (_lastReceiveTime + _disconnectNotifyStart < now)) {
+         Debug.LogFormat("Endpoint has stopped receiving packets for {} ms.  Sending notification.", 
+            _disconnectNotifyStart);
+         uint disconnectTimeout = _disconnectTimeout - _disconnectNotifyStart;
+         OnNetworkInterrupted?.Invoke(disconnectTimeout);
          _disconnect_notify_sent = true;
       }
 
-      if (_disconnect_timeout && (_last_recv_time + _disconnect_timeout < now)) {
+      if (_disconnectTimeout != 0 && (_lastReceiveTime + _disconnectTimeout < now)) {
          if (!_disconnect_event_sent) {
-            Log("Endpoint has stopped receiving packets for %d ms.  Disconnecting.\n", _disconnect_timeout);
-            QueueEvent(Event(Event::Disconnected));
+            Debug.LogFormat("Endpoint has stopped receiving packets for {} ms.  Disconnecting.", 
+               _disconnectTimeout);
+            OnDisconnected?.Invoke();
             _disconnect_event_sent = true;
          }
       }
       break;
 
-   case Disconnected:
+   case State.Disconnected:
       if (_shutdown_timeout < now) {
-         Log("Shutting down udp connection.\n");
-         _udp = NULL;
+         Debug.Log("Shutting down udp connection.");
+         LobbyMember = null;
          _shutdown_timeout = 0;
       }
-
+      break;
    }
   }
 
-  bool OnSyncRequest(INetworkReciever _, SyncRequestMessage msg) {
+  void OnSyncRequest(ref SyncRequestMessage msg) {
      Send<SyncReplyMessage>(new SyncReplyMessage {
         RandomReply = msg.RandomRequest
      });
-     return true;
   }
 
-  bool OnSyncReply(INetworkReciever _, SyncReplyMessage msg) {
+  void OnSyncReply(ref SyncReplyMessage msg) {
      if (_current_state != State.Syncing) {
         Debug.Log("Ignoring SyncReply while not synching.");
-        return false;
+        return;
      }
 
-     if (msg.RandomReply != _sync_state.Random) {
+     if (msg.RandomReply != _state.Sync.Random) {
         Debug.LogFormat("sync reply {} != {}.  Keep looking...",
-            msg.Random_reply, _sync_state.Random);
-        return false;
+            msg.RandomReply, _state.Sync.Random);
+        return;
      }
 
      if (!_connected) {
-        QueueEvent(Event(Event::Connected));
+        OnConnected?.Invoke();
         _connected = true;
      }
 
      Debug.LogFormat("Checking sync state ({} round trips remaining).",
-         _sync_state.RoundTripsRemaining);
-     if (--_sync_state.RoundTripsRemaining == 0) {
+         _state.Sync.RoundTripsRemaining);
+     if (--_state.Sync.RoundTripsRemaining == 0) {
         Debug.Log("Synchronized!");
         OnSynchronized?.Invoke();
-        _current_state = Running;
+        _current_state = State.Running;
         _lastRecievedInput.Frame = -1;
      } else {
         int total = NUM_SYNC_PACKETS;
-        int count = NUM_SYNC_PACKETS - _sync_state.RoundTripsRemaining;
+        int count = NUM_SYNC_PACKETS - (int)_state.Sync.RoundTripsRemaining;
         OnSynchronizing?.Invoke(total, count);
         SendSyncRequest();
      }
-     return true;
   }
 
-  bool OnInputMessage(INetworkReciever _, InputMessage msg) {
+  void OnInputMessage(ref InputMessage msg) {
    // If a disconnect is requested, go ahead and disconnect now.
    bool disconnect_requested = msg.DisconnectRequested;
    if (disconnect_requested) {
-      if (_current_state != Disconnected && !_disconnect_event_sent) {
-         Log("Disconnecting endpoint on remote request.\n");
+      if (_current_state != State.Disconnected && !_disconnect_event_sent) {
+         Debug.Log("Disconnecting endpoint on remote request.");
          OnDisconnected?.Invoke();
          _disconnect_event_sent = true;
       }
    } else {
       // Update the peer connection status if this peer is still considered to be
       // part of the network.
-      UdpMsg::connect_status* remote_status = msg->u.input.peer_connect_status;
-      for (int i = 0; i < _peerConnectStatus.Length; i++) {
-         Assert.IsTrue(remote_status[i].LastFrame >= _peerConnectStatus[i].LastFrame);
-         _peerConnectStatus[i].Disconnected = _peerConnectStatus[i].Disconnected || remote_status[i].Disconnected;
-         _peerConnectStatus[i].LastFrame = Math.Max(_peerConnectStatus[i].LastFrame, remote_status[i].LastFrame);
+      fixed (uint* ptr = msg.connect_status) {
+         var remote_status = (BackrollConnectStatus*)ptr;
+         for (int i = 0; i < _peerConnectStatus.Length; i++) {
+            Assert.IsTrue(remote_status[i].LastFrame >= _peerConnectStatus[i].LastFrame);
+            _peerConnectStatus[i].Disconnected = _peerConnectStatus[i].Disconnected || remote_status[i].Disconnected;
+            _peerConnectStatus[i].LastFrame = Math.Max(_peerConnectStatus[i].LastFrame, remote_status[i].LastFrame);
+         }
       }
    }
 
    // Decompress the input.
-   int last_received_frame_number = _last_received_input.Frame;
+   int last_received_frame_number = _lastRecievedInput.Frame;
    if (msg.NumBits > 0) {
       int offset = 0;
-      byte* bits = (uint8 *)msg.bits;
       int numBits = msg.NumBits;
       int currentFrame = msg.StartFrame;
 
-      _last_received_input.size = msg.InputSize;
-      if (_last_received_input.Frame < 0) {
-         _last_received_input.Frame = msg->u.input.StartFrame - 1;
+      _lastRecievedInput.Size = msg.InputSize;
+      if (_lastRecievedInput.Frame < 0) {
+         _lastRecievedInput.Frame = msg.StartFrame - 1;
       }
-      while (offset < numBits) {
-         // Keep walking through the frames (parsing bits) until we reach
-         // the inputs for the frame right after the one we're on.
-         Assert.IsTrue(currentFrame <= (_last_received_input.Frame + 1));
-         bool useInputs = currentFrame == _last_received_input.Frame + 1;
+      fixed (byte* ptr = msg.bits) {
+         while (offset < numBits) {
+            // Keep walking through the frames (parsing bits) until we reach
+            // the inputs for the frame right after the one we're on.
+            Assert.IsTrue(currentFrame <= (_lastRecievedInput.Frame + 1));
+            bool useInputs = currentFrame == _lastRecievedInput.Frame + 1;
 
-         while (BitVector.ReadBit(bits, ref offset)) {
-            int bit = BitVector.ReadBit(bits, ref offset);
-            int button = BitVector.ReadNibblet(bits, ref offset);
-            if (useInputs) {
-               if (on) {
-                  _last_received_input.set(button);
-               } else {
-                  _last_received_input.clear(button);
+            while (BitVector.ReadBit(ptr, ref offset)) {
+               bool bit = BitVector.ReadBit(ptr, ref offset);
+               int button = BitVector.ReadNibblet(ptr, ref offset);
+               if (useInputs) {
+                  if (bit) {
+                     _lastRecievedInput.Set(button);
+                  } else {
+                     _lastRecievedInput.Clear(button);
+                  }
                }
             }
+            Assert.IsTrue(offset <= numBits);
+
+            // Now if we want to use these inputs, go ahead and send them to
+            // the emulator.
+            if (useInputs) {
+               // Move forward 1 frame in the stream.
+               Assert.IsTrue(currentFrame == _lastRecievedInput.Frame + 1);
+               _lastRecievedInput.Frame = currentFrame;
+
+               // Send the event to the emualtor
+               OnInput?.Invoke(_lastRecievedInput);
+
+               _state.Running.LastInputPacketRecieveTime = BackrollTime.GetTime();
+
+               Debug.LogFormat("Sending frame {} to emu queue {} ({}).",
+                  _lastRecievedInput.Frame, _queue, _lastRecievedInput);
+            } else {
+               Debug.LogFormat("Skipping past frame:({}) current is {}.",
+                  currentFrame, _lastRecievedInput.Frame);
+            }
+
+            // Move forward 1 frame in the input stream.
+            currentFrame++;
          }
-         Assert.IsTrue(offset <= numBits);
-
-         // Now if we want to use these inputs, go ahead and send them to
-         // the emulator.
-         if (useInputs) {
-            // Move forward 1 frame in the stream.
-            Assert.IsTrue(currentFrame == _last_received_input.Frame + 1);
-            _last_received_input.Frame = currentFrame;
-
-            // Send the event to the emualtor
-            OnInput?.Invoke(_lastRecievedInput);
-
-            _state.running.last_input_packet_recv_time = timeGetTime();
-
-            Debug.LogFormat("Sending frame {} to emu queue {} (%s).",
-                _last_received_input.Frame, _queue, _lastRecievedInput);
-            QueueEvent(evt);
-
-         } else {
-            Debug.Log("Skipping past frame:({}) current is {}.",
-                currentFrame, _last_received_input.Frame);
-         }
-
-         // Move forward 1 frame in the input stream.
-         currentFrame++;
       }
    }
-   Assert.IsTrue(_last_received_input.Frame >= last_received_frame_number);
+   Assert.IsTrue(_lastRecievedInput.Frame >= last_received_frame_number);
 
    // Get rid of our buffered input
    FlushOutputs(msg.AckFrame);
-   return true;
   }
 
-  bool OnInputAck(INetworkReciever _, InputAckMessage msg) {
+  void OnInputAck(ref InputAckMessage msg) {
      // Get rid of our buffered input
      FlushOutputs(msg.AckFrame);
-     return true;
   }
 
   void FlushOutputs(int ackFrame) {
-     while (_pending_output.Size && _pending_output.Peek().Frame < acFrame) {
+     while (!_pending_output.IsEmpty && _pending_output.Peek().Frame < ackFrame) {
         Debug.LogFormat("Throwing away pending output frame {}",
             _pending_output.Peek().Frame);
         _last_acked_input = _pending_output.Peek();
@@ -596,14 +614,14 @@ public class BackrollConnection : IDisposable {
      }
   }
 
-   void OnQualityReport(INetworkReciever _, QualityReportMessage msg) {
+   void OnQualityReport(ref QualityReportMessage msg) {
      // send a reply so the other side can compute the round trip transmit time.
      Send<QualityReplyMessage>(new QualityReplyMessage { Pong = msg.Ping }, Reliabilty.Unreliable);
      _remoteFrameAdvantage = msg.FrameAdvantage;
    }
 
   void UpdateNetworkStats() {
-     uint now = GetTime();
+     uint now = BackrollTime.GetTime();
 
      if (_stats_start_time == 0) {
         _stats_start_time = now;

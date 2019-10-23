@@ -182,6 +182,12 @@ public unsafe class Sync : IDisposable {
      Debug.Log("---");
   }
 
+  protected void ResetPrediction(int frameNumber) {
+    for (int i = 0; i < _inputQueues.Length; i++) {
+      _inputQueues[i].ResetPrediction(frameNumber);
+    }
+  }
+
   void LoadFrame(int frame) {
      // find the frame in question
      if (frame == FrameCount) {
@@ -213,11 +219,8 @@ public unsafe class Sync : IDisposable {
         _callbacks.FreeBuffer((IntPtr)state.Buffer);
         state.Buffer = null;
      }
+     _callbacks.SaveGameState(ref state);
      state.Frame = FrameCount;
-     fixed (SavedFrame* buffer = state) {
-        _callbacks.SaveGameState(&state.Buffer, &state.Size, &state.Checksum,
-                                    state.Frame);
-     }
 
      Debug.LogFormat("=== Saved frame info {} (size: {}  checksum: %08x).",
          state.Frame, state.Size, state.Checksum);
@@ -256,7 +259,7 @@ public unsafe class Sync : IDisposable {
      int first_incorrect = GameInput.kNullFrame;
      for (int i = 0; i < _config.NumPlayers; i++) {
         int incorrect = _inputQueues[i].GetFirstIncorrectFrame();
-        Debug.Log("considering incorrect frame {} reported by queue {}.", incorrect, i);
+        Debug.LogFormat("considering incorrect frame {} reported by queue {}.", incorrect, i);
 
         if (incorrect != GameInput.kNullFrame &&
             (first_incorrect == GameInput.kNullFrame ||
@@ -274,7 +277,7 @@ public unsafe class Sync : IDisposable {
   }
 
   public void SetFrameDelay(int queue, int delay) {
-     _inputQueues[queue].SetFrameDelay(delay);
+     _inputQueues[queue].FrameDelay = delay;
   }
 
   void Prediction(int frameNumber) {

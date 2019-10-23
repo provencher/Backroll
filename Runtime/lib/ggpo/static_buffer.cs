@@ -9,11 +9,11 @@ public class StaticBuffer<T> {
   public int Capacity => _elements.Length;
 
   public StaticBuffer(int size) {
-    _elements = new T[size]
+    _elements = new T[size];
     Size = 0;
   }
 
-  public ref this[int idx] {
+  public ref T this[int idx] {
     get {
       Assert.IsTrue(idx >= 0 && idx < Size);
       return ref _elements[idx];

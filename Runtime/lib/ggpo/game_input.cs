@@ -9,21 +9,19 @@ namespace HouraiTeahouse.Backroll {
 public unsafe struct GameInput {
 
   public const int kNullFrame = -1;
-
-  public const int kMaxPlayers = 8;
   public const int kMaxBytes   = 8;
 
   public int Frame;
   public uint Size;
-  public fixed byte bits[kMaxPlayers * kMaxBytes];
+  public fixed byte bits[BackrollConstants.kMaxPlayers * kMaxBytes];
 
   public GameInput(int iframe, void* ibits, uint isize) {
      Assert.IsTrue(isize > 0);
-     Assert.IsTrue(isize <= kMaxBytes * kMaxPlayers);
+     Assert.IsTrue(isize <= kMaxBytes * BackrollConstants.kMaxPlayers);
      Frame = iframe;
      Size = isize;
      fixed (byte* ptr = bits) {
-       UnsafeUtility.MemClear(ptr, kMaxBytes * kMaxPlayers);
+       UnsafeUtility.MemClear(ptr, kMaxBytes * BackrollConstants.kMaxPlayers);
        if (ibits != null) {
           UnsafeUtility.MemCpy(ptr, ibits, isize);
        }
@@ -36,7 +34,7 @@ public unsafe struct GameInput {
      Frame = frame;
      Size = isize;
      fixed (byte* ptr = bits) {
-      UnsafeUtility.MemClear(ptr, kMaxPlayers * kMaxBytes);
+      UnsafeUtility.MemClear(ptr, kMaxBytes * BackrollConstants.kMaxPlayers);
       if (ibits != null) {
           UnsafeUtility.MemCpy(ptr + (offset * isize), ibits, isize);
       }
@@ -55,20 +53,20 @@ public unsafe struct GameInput {
   public bool this[int bit] {
     get {
       fixed (byte* ptr = bits) {
-        return (bits[i/8] & (1 << (i%8))) != 0;
+        return (ptr[bit/8] & (1 << (bit%8))) != 0;
       }
     }
   }
 
   public void Set(int i) {
     fixed (byte* ptr = bits) {
-      ptr[i / 8] |= (1 << (i%8));
+      ptr[i / 8] |= (byte)(1 << (i%8));
     }
   }
 
   public void Clear(int i) {
     fixed (byte* ptr = bits) {
-      ptr[i / 8] &= ~(1 << (i%8));
+      ptr[i / 8] &= (byte)~(1 << (i%8));
     }
   }
 

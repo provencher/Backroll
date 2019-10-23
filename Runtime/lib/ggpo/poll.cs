@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 
 namespace HouraiTeahouse.Backroll {
 
@@ -27,9 +28,8 @@ public class Poll {
   }
 
   public bool Pump() {
-    int i, res;
     bool finished = false;
-    foreach (var sink in PollSink) {
+    foreach (var sink in _loop_sinks) {
       finished = !sink.Handler(sink.Cookie) || finished;
     }
     return finished;
