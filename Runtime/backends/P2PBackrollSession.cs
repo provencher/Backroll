@@ -14,8 +14,8 @@ public struct BackrollSessionConfig {
 
    public bool IsValid => GetLobby() != null && Callbacks?.IsValid == true;
 
-   public LobbyBase GetLobby() {
-      LobbyBase lobby = null;
+   public Lobby GetLobby() {
+      Lobby lobby = null;
       if (!(GetLobby(Players, ref lobby) &&
             GetLobby(Spectators, ref lobby))) {
          return null;
@@ -23,7 +23,7 @@ public struct BackrollSessionConfig {
       return lobby;
    }
 
-   static bool GetLobby(LobbyMember[] members, ref LobbyBase lobby) {
+   static bool GetLobby(LobbyMember[] members, ref Lobby lobby) {
       if (members == null) return false;
       foreach (var member in members) {
          if (member == null) return false;
@@ -69,7 +69,7 @@ public unsafe class P2PBackrollSession<T> : BackrollSession<T> where T : struct 
   public int PlayerCount => _players.Length;
   public int SpectatorCount => _spectators.Length;
 
-  public P2PBackrollSession(BackrollSessionConfig config) : base(config.GetLobby()) {
+  public P2PBackrollSession(BackrollSessionConfig config) {
      _next_recommended_sleep = 0;
 
      _next_spectator_frame = 0;
@@ -308,7 +308,17 @@ public unsafe class P2PBackrollSession<T> : BackrollSession<T> where T : struct 
   }
 
   void SetupConnection(BackrollConnection connection) {
+     var member = connection.LobbyMember;
      var queue = GetIndex(connection.LobbyMember, _players);
+     member.OnDisconnected += () => {
+         if (queue >= 0) {
+            DisconnectPlayer(QueueToPlayerHandle(queue));
+         }
+         var spectator = GetIndex(member, _spectators);
+         if (spectator >= 0) {
+            _spectators[spectator].Disconnect();
+         }
+     };
      if (queue < 0) return ;
      var handle = QueueToPlayerHandle(queue);
      connection.OnInput += (input) => {
@@ -350,18 +360,6 @@ public unsafe class P2PBackrollSession<T> : BackrollSession<T> where T : struct 
            Player = handle
         });
      };
-  }
-
-  protected override void DestroyConnection(LobbyMember member) {
-    base.DestroyConnection(member);
-    var queue = GetIndex(member, _players);
-    if (queue >= 0) {
-      DisconnectPlayer(QueueToPlayerHandle(queue));
-    }
-    queue = GetIndex(member, _spectators);
-    if (queue >= 0) {
-      _spectators[queue].Disconnect();
-    }
   }
 
   // Called only as the result of a local decision to disconnect.  The remote

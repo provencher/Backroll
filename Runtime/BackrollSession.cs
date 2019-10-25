@@ -30,7 +30,7 @@ public static class Backroll {
   // num_players - The number of players which will be in this game.  The number of players
   // per session is fixed.  If you need to change the number of players or any player
   // disconnects, you must start a new session.
-  public static BackrollSession<T> StartSpectating<T>(LobbyBase lobby) where T : struct {
+  public static BackrollSession<T> StartSpectating<T>(Lobby lobby) where T : struct {
     throw new NotImplementedException();
   }
 
@@ -57,11 +57,11 @@ public static class Backroll {
 
 }
 
-public abstract class BackrollSession<T> : FullMeshPeer where T : struct {
+public abstract class BackrollSession<T> where T : struct {
 
   public static int InputSize => UnsafeUtility.SizeOf<T>();
 
-  protected BackrollSession(LobbyBase lobby) : base(lobby) {
+  protected BackrollSession() : base() {
     Assert.IsTrue(UnsafeUtility.IsBlittable<T>());
   }
 

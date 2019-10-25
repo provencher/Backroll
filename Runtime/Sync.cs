@@ -188,7 +188,7 @@ public unsafe class Sync : IDisposable {
     }
   }
 
-  void LoadFrame(int frame) {
+  public void LoadFrame(int frame) {
      // find the frame in question
      if (frame == FrameCount) {
         Debug.Log("Skipping NOP.");
@@ -211,7 +211,7 @@ public unsafe class Sync : IDisposable {
      _savedstate.Head = (_savedstate.Head + 1) % _savedstate.Frames.Length;
   }
 
-  void SaveCurrentFrame() {
+  public void SaveCurrentFrame() {
      // See StateCompress for the real save feature implemented by FinalBurn.
      // Write everything into the Head, then advance the Head pointer.
      ref SavedFrame state = ref _savedstate.Frames[_savedstate.Head];
@@ -228,7 +228,7 @@ public unsafe class Sync : IDisposable {
      _savedstate.Head = (_savedstate.Head + 1) % _savedstate.Frames.Length;
   }
 
-  ref SavedFrame GetLastSavedFrame() {
+  public ref SavedFrame GetLastSavedFrame() {
      int i = _savedstate.Head - 1;
      if (i < 0) {
         i = _savedstate.Frames.Length - 1;

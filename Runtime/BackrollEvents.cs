@@ -69,6 +69,12 @@ public class BackrollSessionCallbacks {
   // the client is ahead.
   public Action<TimeSyncEvent> OnTimeSync;
 
+  // Used only for sync tests, provides a way to log the state of a 
+  // 1 - Prefix
+  // 2 - Buffer Pointer
+  // 3 - Buffer Size
+  public Action<string, IntPtr, int> OnLogState;
+
 }
 
 public struct TimeSyncEvent {
