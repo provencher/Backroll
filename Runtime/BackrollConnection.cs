@@ -189,9 +189,11 @@ public unsafe class BackrollConnection : IDisposable {
      Send(new InputAckMessage { AckFrame = _lastRecievedInput.Frame });
    }
 
-   unsafe void Send<T>(in T msg, Reliability reliability = Reliability.Reliable) where T : struct, INetworkSerializable {
-     var buffer = stackalloc byte[2048];
-     var serializer = Serializer.Create(buffer, (uint)SerializationConstants.kMaxMessageSize);
+   unsafe void Send<T>(in T msg, Reliability reliability = Reliability.Unreliable)
+                      where T : struct, INetworkSerializable {
+     const int size = SerializationConstants.kMaxMessageSize;
+     var buffer = stackalloc byte[size];
+     var serializer = Serializer.Create(buffer, (uint)size);
      _messageHandlers.Serialize<T>(msg, ref serializer);
 
      _packets_sent++;
@@ -303,7 +305,7 @@ public unsafe class BackrollConnection : IDisposable {
    case State.Syncing:
       int next_interval = (_state.Sync.RoundTripsRemaining == NUM_SYNC_PACKETS) ? SYNC_FIRST_RETRY_INTERVAL : SYNC_RETRY_INTERVAL;
       if (_lastSendTime != 0 && _lastSendTime + next_interval < now) {
-         Debug.LogFormat("No luck syncing after {} ms... Resending sync packet.", 
+         Debug.LogFormat("No luck syncing after {} ms... Resending sync packet.",
             next_interval);
          SendSyncRequest();
       }
@@ -311,15 +313,15 @@ public unsafe class BackrollConnection : IDisposable {
 
    case State.Running:
       // xxx: rig all this up with a timer wrapper
-      if (_state.Running.LastInputPacketRecieveTime == 0|| 
+      if (_state.Running.LastInputPacketRecieveTime == 0||
           _state.Running.LastInputPacketRecieveTime + RUNNING_RETRY_INTERVAL < now) {
-         Debug.LogFormat("Haven't exchanged packets in a while (last received:{}  last sent:{}).  Resending.", 
+         Debug.LogFormat("Haven't exchanged packets in a while (last received:{}  last sent:{}).  Resending.",
             _lastRecievedInput.Frame, _lastSentInput.Frame);
          SendPendingOutput();
          _state.Running.LastInputPacketRecieveTime = now;
       }
 
-      if (_state.Running.last_quality_report_time == 0 || 
+      if (_state.Running.last_quality_report_time == 0 ||
           _state.Running.last_quality_report_time + QUALITY_REPORT_INTERVAL < now) {
          Send(new QualityReportMessage {
             Ping = BackrollTime.GetTime(),
@@ -328,13 +330,13 @@ public unsafe class BackrollConnection : IDisposable {
          _state.Running.last_quality_report_time = now;
       }
 
-      if (_state.Running.last_network_stats_interval == 0 || 
+      if (_state.Running.last_network_stats_interval == 0 ||
           _state.Running.last_network_stats_interval + NETWORK_STATS_INTERVAL < now) {
          UpdateNetworkStats();
          _state.Running.last_network_stats_interval =  now;
       }
 
-      if (_lastSendTime == 0 && 
+      if (_lastSendTime == 0 &&
           _lastSendTime + KEEP_ALIVE_INTERVAL < now) {
          Debug.Log("Sending keep alive packet");
          Send(new KeepAliveMessage());
@@ -342,7 +344,7 @@ public unsafe class BackrollConnection : IDisposable {
 
       if (_disconnectTimeout != 0 && _disconnectNotifyStart != 0 &&
          !_disconnect_notify_sent && (_lastReceiveTime + _disconnectNotifyStart < now)) {
-         Debug.LogFormat("Endpoint has stopped receiving packets for {} ms.  Sending notification.", 
+         Debug.LogFormat("Endpoint has stopped receiving packets for {} ms.  Sending notification.",
             _disconnectNotifyStart);
          uint disconnectTimeout = _disconnectTimeout - _disconnectNotifyStart;
          OnNetworkInterrupted?.Invoke(disconnectTimeout);
@@ -351,7 +353,7 @@ public unsafe class BackrollConnection : IDisposable {
 
       if (_disconnectTimeout != 0 && (_lastReceiveTime + _disconnectTimeout < now)) {
          if (!_disconnect_event_sent) {
-            Debug.LogFormat("Endpoint has stopped receiving packets for {} ms.  Disconnecting.", 
+            Debug.LogFormat("Endpoint has stopped receiving packets for {} ms.  Disconnecting.",
                _disconnectTimeout);
             OnDisconnected?.Invoke();
             _disconnect_event_sent = true;
@@ -506,7 +508,7 @@ public unsafe class BackrollConnection : IDisposable {
 
    void OnQualityReport(ref QualityReportMessage msg) {
      // send a reply so the other side can compute the round trip transmit time.
-     Send<QualityReplyMessage>(new QualityReplyMessage { Pong = msg.Ping }, Reliability.Unreliable);
+     Send(new QualityReplyMessage { Pong = msg.Ping });
      _remoteFrameAdvantage = msg.FrameAdvantage;
    }
 
