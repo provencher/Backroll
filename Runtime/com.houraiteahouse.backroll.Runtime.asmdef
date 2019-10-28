@@ -1,7 +1,8 @@
 {
     "name": "com.houraiteahouse.backroll.Runtime",
     "references": [
-        "GUID:4487c07f4904b9441a8796ba81d3a533"
+        "GUID:4487c07f4904b9441a8796ba81d3a533",
+        "GUID:c4a0e28f46aff7444a36a1b96d3fcc54"
     ],
     "optionalUnityReferences": [],
     "includePlatforms": [],
