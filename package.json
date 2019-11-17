@@ -9,7 +9,7 @@
   "repository": "github:HouraiTeahouse/Backroll",
   "dependencies": {
     "com.houraiteahouse.core": "0.1.0",
-    "com.houraiteahouse.networking": "0.1.0"
+    "com.houraiteahouse.networking": "0.1.2"
   },
   "publishConfig": {
     "registry": "https://upm.houraiteahouse.net"
